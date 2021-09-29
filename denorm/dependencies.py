@@ -5,7 +5,6 @@ from django.db.models.fields import related
 from django.db import connections, connection
 import denorm
 from django.contrib import contenttypes
-import six
 
 
 class DenormDependency(object):
@@ -48,7 +47,7 @@ class DependOnRelated(DenormDependency):
         if self.other_model == related.RECURSIVE_RELATIONSHIP_CONSTANT:
             self.other_model = self.this_model
 
-        if isinstance(self.other_model, six.string_types):
+        if isinstance(self.other_model, str):
             # if ``other_model`` is a string, it certainly is a lazy relation.
             try:
                 def function(local, related, field):
