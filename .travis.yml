@@ -1,3 +1,5 @@
+services:
+  - postgresql
 language: python
 install:
   - pip install tox
@@ -25,9 +27,3 @@ matrix:
 after_script:
   - cd test_denorm_project/
   - coveralls --rcfile=../.coveragerc
-addons:
-  postgresql: '11'
-  apt:
-    packages:
-      - postgresql-client-12
-      - postgresql-server-dev-12
