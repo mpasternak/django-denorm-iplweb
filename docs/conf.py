@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# django-denorm documentation build configuration file, created by
+# django-denorm-iplweb documentation build configuration file, created by
 # sphinx-quickstart on Fri May 22 22:07:05 2009.
 #
 # This file is execfile()d with the current directory set to its containing dir.
@@ -170,8 +170,8 @@ htmlhelp_basename = 'django-denormdoc'
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, document class [howto/manual]).
 latex_documents = [
-  ('index', 'django-denorm.tex', ur'django-denorm Documentation',
-   ur'Christian Schilling', 'manual'),
+  ('index', 'django-denorm.tex', 'django-denorm Documentation',
+   'Christian Schilling', 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of

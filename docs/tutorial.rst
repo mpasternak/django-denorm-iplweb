@@ -96,7 +96,7 @@ model it belongs to.
 If the value somehow depends on information stored in other models, it will get
 out of sync as those external information changes.
 
-As this is a very undesirable effect, django-denorm provides a mechanism to
+As this is a very undesirable effect, django-denorm-iplweb provides a mechanism to
 tell it what other model instances will effect the computed value. It provides
 additional decorators to attach this dependency information to the function
 before it gets turned into a field.
@@ -138,7 +138,7 @@ name of the ForeignKey to use like this::
         @depend_on_related('SomeOtherModel',foreign_key='other')
     ...
 
-If this still is not enough information for django-denorm to pick the right
+If this still is not enough information for django-denorm-iplweb to pick the right
 relation, there is probably a recursive dependency (on ``self``).
 In that you also need to specify the direction of the relation::
 
@@ -203,7 +203,7 @@ Final steps
 ===========
 
 Now that the models contain all information needed for the denormalization to work,
-we need to do some final steps to make the database use it. As django-denorm uses triggers,
+we need to do some final steps to make the database use it. As django-denorm-iplweb uses triggers,
 those have to be created in the database with::
 
     ./manage.py denorm_init
