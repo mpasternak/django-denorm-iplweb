@@ -4,6 +4,7 @@ import django
 from time import sleep
 from optparse import make_option
 
+import errno
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -61,7 +62,7 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("daemon already running as pid: %s\n" % (pid,)))
             return True
         except OSError as err:
-            return err.errno == os.errno.EPERM
+            return err.errno == errno.EPERM
         except IOError as err:
             if err.errno == 2:
                 return False
