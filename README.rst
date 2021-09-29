@@ -21,6 +21,8 @@ Reasons for this fork being PostgreSQL-only:
 * lack of resources for maintaning other backends,
 * planned usage of ``LISTEN``/``NOTIFY`` mechanisms, available in PostgreSQL.
 
+Patches welcome!
+
 .. _django-denorm: https://github.com/django-denorm/django-denorm
 
 Documentation is available from http://django-denorm-iplweb.github.io/django-denorm-iplweb/
