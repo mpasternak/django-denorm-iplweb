@@ -26,4 +26,4 @@ after_script:
   - cd test_denorm_project/
   - coveralls --rcfile=../.coveragerc
 addons:
-  postgresql: "13"
+  postgresql: "12"
