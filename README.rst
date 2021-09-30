@@ -19,7 +19,7 @@ Django versions supported:
 Reasons for this fork being PostgreSQL-only:
 
 * lack of resources for maintaning other backends,
-* planned usage of ``LISTEN``/``NOTIFY`` mechanisms, available in PostgreSQL.
+* usage of ``LISTEN``/``NOTIFY`` mechanisms, available in PostgreSQL.
 
 Patches welcome!
 
