@@ -46,8 +46,8 @@ Management commands
 **denorm_flush**
     .. automodule:: denorm.management.commands.denorm_flush
 
-**denorm_daemon**
-    .. automodule:: denorm.management.commands.denorm_daemon
+**denorm_queue**
+    .. automodule:: denorm.management.commands.denorm_queue
 
 **denorm_sql**
     .. automodule:: denorm.management.commands.denorm_sql

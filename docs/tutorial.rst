@@ -75,7 +75,7 @@ Example::
 
     class SomeModel(models.Model):
         # the other fields
-        
+
         @denormalized(models.CharField,max_length=100)
         def some_computation(self):
            # your code
@@ -83,7 +83,7 @@ Example::
 
 in this example ``SomeModel`` will have a ``CharField`` named ``some_computation``.
 
-**Note:** You must add the column in the DB yourself (either manually or through a south migration) since 
+**Note:** You must add the column in the DB yourself (either manually or through a south migration) since
 denorm won't perform that operation for you.
 
 Adding dependency information
@@ -145,7 +145,7 @@ In that you also need to specify the direction of the relation::
     ...
         @depend_on_related('self',type='forward')
     ...
-    
+
 Denormalizing ForeignKeys
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -187,17 +187,27 @@ This can be accomplished by adding ``DenormMiddleware`` to ``MIDDLEWARE_CLASSES`
 
 As shown in the example, I recommend to place ``DenormMiddleware`` right after ``TransactionMiddleware``.
 
-Using the daemon
-^^^^^^^^^^^^^^^^
+Using the queue
+^^^^^^^^^^^^^^^
 
 If the above solution causes problem like slowing the webserver down because
-``denorm.flush`` takes to much time to complete, you can use a daemon to update the data.
-The daemon will check for dirty rows in regular intervals and update them as necessary.
-To run the daemon with an interval of 10 seconds run::
+``denorm.flush`` takes to much time to complete, you can use a background process to update the data.
+The process will check for dirty rows as it is being run and then it will re-check
+as soon as it gets a NOTIFY_ signal from the database server.
 
-    ./manage.py denorm_daemon 10
 
-The command will print the daemons pid and then detach itself from the terminal.
+To run the process, which waits for NOTIFY_ command from PostgreSQL server, run::
+
+    ./manage.py denorm_queue
+
+The command runs in foreground. If you need to daemonize it, use specialized tools like supervisord_
+
+It could be tempting to run multiple of such processess - to perform flushing in a multi-threaded manner.
+Your objects could depend on other objects, and those objects could depend on even more
+objects. As django-denorm-iplweb tries to be a general-purpose tool, at this moment running
+multiple instances of ``denorm_queue`` is not recommended. In some situations this could be
+perfectly doable - in some, this could easily be a source of database deadlocks. Your milleage
+may vary - proceed with caution.
 
 Final steps
 ===========
@@ -208,12 +218,15 @@ those have to be created in the database with::
 
     ./manage.py denorm_init
 
-This has to be redone after every time you make changes to denormalized fields.
+This should be redone after every time you make changes to denormalized fields. On the other hand,
+unless you set ``DENORM_INSTALL_TRIGGERS_AFTER_MIGRATE`` variable to ``False``, trigger installation
+will be performed every single time after ``migrate`` command is finished.
 
 Testing denormalized apps
 =========================
 
-When testing a denormalized app you will need to instal the triggers in the setUp method::
+When testing a denormalized app you will need to instal the triggers in the setUp method. You could
+also use a tearDown procedure like::
 
     from denorm import denorms
 
@@ -221,3 +234,10 @@ When testing a denormalized app you will need to instal the triggers in the setU
 
         def setUp(self):
             denorms.install_triggers()
+
+        def tearDown(self):
+            denorms.drop_triggers()
+
+
+.. _supervisord: http://supervisord.org
+.. _NOTIFY: https://www.postgresql.org/docs/9.0/sql-notify.html
