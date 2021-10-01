@@ -1,3 +1,4 @@
+from io import StringIO
 from unittest.mock import patch
 
 import django
@@ -775,7 +776,13 @@ class CommandsTestCase(TransactionTestCase):
 
     def test_denorm_sql(self):
         "Test denorm_init command."
+        import sys
+
+        sys.stdout = StringIO()
+
         call_command("denorm_sql")
+
+        sys.stdout = sys.__stdout__
 
     def test_denormalize(self):
         "Test denorm_init command."
