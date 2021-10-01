@@ -9,3 +9,5 @@ dist
 django_denorm_iplweb.egg-info
 .tox/
 test_denorm_project/.coverage
+\#*
+.#*
