@@ -246,14 +246,6 @@ class SumField(AggregateField):
         return denorms.SumDenorm(skip, self.field)
 
 
-class CopyField(AggregateField):
-    """
-    Field, which makes two field identical. Any change in related field will change this field
-    """
-
-    # TODO: JFDI
-
-
 class CacheKeyField(models.BigIntegerField):
     """
     A ``BigIntegerField`` that gets set to a random value anytime
