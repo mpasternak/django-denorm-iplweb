@@ -16,4 +16,8 @@ Changelog
 * added pre-commit hooks for autopep, flake8,
 * added bumpver configuration,
 * automatic trigger installation after post_migrate,
-* documentation updated.
+* documentation updated,
+* post_migration signal causes trigger rebuild,
+* ``rebuild_triggers`` command to rebuild triggers,
+* deprecated command ``denormalize`` removed,
+* field names given as a parameter to ``skip`` or ``denorm_always_skip`` are checked if they exist.
