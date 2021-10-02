@@ -36,7 +36,6 @@ class TriggerActionInsert(base.TriggerActionInsert):
         sql = (
             "BEGIN\n"
             "    INSERT INTO %(table)s %(columns)s %(values)s;\n"
-            "    NOTIFY %(denorm_queue_name)s;\n"
             "EXCEPTION WHEN unique_violation THEN\n"
             "    -- do nothing\n"
             "END"
