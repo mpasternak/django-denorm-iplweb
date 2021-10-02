@@ -141,6 +141,9 @@ CREATE OR REPLACE FUNCTION func_%(name)s()
         RETURN NULL;
     END;
 $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS %(name)s ON %(table)s;
+
 CREATE TRIGGER %(name)s
     %(time)s %(event)s ON %(table)s
     FOR EACH ROW EXECUTE PROCEDURE func_%(name)s();
