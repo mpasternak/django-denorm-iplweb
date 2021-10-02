@@ -86,17 +86,6 @@ def denormalized(DBField, *args, **kwargs):
                 setattr(model_instance, self.attname, value)
                 return value
 
-        def south_field_triple(self):
-            """
-            Because this field will be defined as a decorator, give
-            South hints on how to recreate it for database use.
-            """
-            from south.modelsinspector import introspector
-
-            field_class = DBField.__module__ + "." + DBField.__name__
-            args, kwargs = introspector(self)
-            return (field_class, args, kwargs)
-
         def deconstruct(self):
             name, path, args, kwargs = super(DenormDBField, self).deconstruct()
             super_name, super_path, super_args, super_kwargs = DBField(
@@ -158,15 +147,6 @@ class AggregateField(models.PositiveIntegerField):
         self.denorm.fieldname = name
         models.signals.class_prepared.connect(self.denorm.setup)
         super(AggregateField, self).contribute_to_class(cls, name, *args, **kwargs)
-
-    def south_field_triple(self):
-        return (
-            ".".join(("django", "db", "models", models.PositiveIntegerField.__name__)),
-            [],
-            {
-                "default": "0",
-            },
-        )
 
     def pre_save(self, model_instance, add):
         """
@@ -288,15 +268,6 @@ class CacheKeyField(models.BigIntegerField):
         value = self.denorm.func(model_instance)
         setattr(model_instance, self.attname, value)
         return value
-
-    def south_field_triple(self):
-        return (
-            ".".join(("django", "db", "models", models.BigIntegerField.__name__)),
-            [],
-            {
-                "default": "0",
-            },
-        )
 
 
 class CacheWrapper(object):
