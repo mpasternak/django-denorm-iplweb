@@ -81,9 +81,10 @@ def get_alldenorms():
 
 
 class Denorm(object):
-    def __init__(self, skip=None):
+    def __init__(self, skip=None, only=None):
         self.func = None
         self.skip = skip
+        self.only = only
 
     def get_quote_name(self, using):
         if using:
@@ -207,10 +208,24 @@ class CallbackDenorm(BaseCallbackDenorm):
         )
         trigger_list = [
             triggers.Trigger(
-                self.model, "after", "update", [action], content_type, using, self.skip
+                self.model,
+                "after",
+                "update",
+                [action],
+                content_type,
+                using,
+                self.skip,
+                self.only,
             ),
             triggers.Trigger(
-                self.model, "after", "insert", [action], content_type, using, self.skip
+                self.model,
+                "after",
+                "insert",
+                [action],
+                content_type,
+                using,
+                self.skip,
+                self.only,
             ),
         ]
 
@@ -276,10 +291,24 @@ class CacheKeyDenorm(BaseCacheKeyDenorm):
         )
         trigger_list = [
             triggers.Trigger(
-                self.model, "after", "update", [action], content_type, using, self.skip
+                self.model,
+                "after",
+                "update",
+                [action],
+                content_type,
+                using,
+                self.skip,
+                self.only,
             ),
             triggers.Trigger(
-                self.model, "after", "insert", [action], content_type, using, self.skip
+                self.model,
+                "after",
+                "insert",
+                [action],
+                content_type,
+                using,
+                self.skip,
+                self.only,
             ),
         ]
 
@@ -330,9 +359,10 @@ class TriggerFilterQuery(sql.Query):
 class AggregateDenorm(Denorm):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, skip=None):
+    def __init__(self, skip=None, only=None):
         self.manager = None
         self.skip = skip
+        self.only = only
 
     def setup(self, sender, **kwargs):
         # as we connected to the ``class_prepared`` signal for any sender
@@ -644,8 +674,8 @@ class CountDenorm(AggregateDenorm):
     updates.
     """
 
-    def __init__(self, skip=None):
-        super(CountDenorm, self).__init__(skip)
+    def __init__(self, skip=None, only=None):
+        super(CountDenorm, self).__init__(skip=skip, only=only)
         # in case we want to set the value without relying on the
         # correctness of the incremental updates we create a function that
         # calculates it from scratch.

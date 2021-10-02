@@ -115,6 +115,13 @@ class TestSkip(TransactionTestCase):
 
         denorm.flush()
 
+    def test_with_only(self):
+        # This should not result in an endless loop.
+        comment = models.SkipCommentWithOnly(post=self.post, text="Oh really?")
+        comment.save()
+
+        denorm.flush()
+
     def test_meta_skip(self):
         """Test a model with the attribute listed under denorm_always_skip."""
         comment = models.SkipCommentWithAttributeSkip(

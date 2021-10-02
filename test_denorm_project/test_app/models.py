@@ -1,18 +1,18 @@
-from django.db import connection
 from django.conf import settings
-from django.db import models
+from django.db import connection, models
+
 try:
     from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
 except ImportError:
     from django.contrib.contenttypes.generic import GenericForeignKey, GenericRelation
+
 from django.contrib import contenttypes
 from django.core.cache import cache
 
+from denorm import CacheKeyField, CountField, cached, denormalized, depend_on_related
 from denorm.fields import SumField
-from denorm import denormalized, depend_on_related, CountField, CacheKeyField, cached
 
-
-settings.DENORM_MODEL = 'test_app.RealDenormModel'
+settings.DENORM_MODEL = "test_app.RealDenormModel"
 
 
 class FailingTriggersModelA(models.Model):
@@ -30,14 +30,14 @@ class FailingTriggersModelB(models.Model):
 
 
 class CachedModelA(models.Model):
-    b = models.ForeignKey('CachedModelB', on_delete=models.CASCADE)
+    b = models.ForeignKey("CachedModelB", on_delete=models.CASCADE)
 
     @cached(cache)
-    @depend_on_related('CachedModelB')
+    @depend_on_related("CachedModelB")
     def cached_data(self):
         return {
-            'upper': self.b.data.upper(),
-            'lower': self.b.data.lower(),
+            "upper": self.b.data.upper(),
+            "lower": self.b.data.lower(),
         }
 
 
@@ -55,7 +55,7 @@ class AbstractDenormModel(models.Model):
 
     class Meta:
         abstract = True
-        app_label = 'test_app'
+        app_label = "test_app"
 
 
 class DenormModel(AbstractDenormModel):
@@ -64,7 +64,7 @@ class DenormModel(AbstractDenormModel):
         return u"Spam and %s" % self.text
 
     class Meta(AbstractDenormModel.Meta):
-        swappable = 'DENORM_MODEL'
+        swappable = "DENORM_MODEL"
 
 
 class RealDenormModel(AbstractDenormModel):
@@ -79,9 +79,11 @@ class RealDenormModel(AbstractDenormModel):
 class Tag(models.Model):
     name = models.CharField(max_length=255)
 
-    content_type = models.ForeignKey(contenttypes.models.ContentType, on_delete=models.CASCADE)
+    content_type = models.ForeignKey(
+        contenttypes.models.ContentType, on_delete=models.CASCADE
+    )
     object_id = models.PositiveIntegerField()
-    content_object = GenericForeignKey('content_type', 'object_id')
+    content_object = GenericForeignKey("content_type", "object_id")
 
 
 class TaggedModel(models.Model):
@@ -90,7 +92,7 @@ class TaggedModel(models.Model):
     @denormalized(models.TextField)
     @depend_on_related(Tag)
     def tags_string(self):
-        return ', '.join(sorted([t.name for t in self.tags.all()]))
+        return ", ".join(sorted([t.name for t in self.tags.all()]))
 
     class Meta:
         abstract = True
@@ -100,38 +102,48 @@ class Forum(TaggedModel):
     title = models.CharField(max_length=255)
 
     # Simple count() aggregate
-    post_count = CountField('post_set')
+    post_count = CountField("post_set")
 
     cachekey = CacheKeyField()
-    cachekey.depend_on_related('Post')
+    cachekey.depend_on_related("Post")
 
     @denormalized(models.CharField, max_length=255)
-    @depend_on_related('Post')
+    @depend_on_related("Post")
     def author_names(self):
-        return ', '.join((m.author_name for m in self.post_set.all()))
+        return ", ".join((m.author_name for m in self.post_set.all()))
 
-    @denormalized(models.ManyToManyField, 'Member', blank=True)
-    @depend_on_related('Post')
+    @denormalized(models.ManyToManyField, "Member", blank=True)
+    @depend_on_related("Post")
     def authors(self):
         return [m.author for m in self.post_set.all() if m.author]
 
     # let's say this forums supports subforums, sub-subforums and so forth
     # so we can test depend_on_related('self') (for tree structures).
-    parent_forum = models.ForeignKey('self', blank=True, null=True, on_delete=models.CASCADE)
+    parent_forum = models.ForeignKey(
+        "self", blank=True, null=True, on_delete=models.CASCADE
+    )
 
     @denormalized(models.TextField)
-    @depend_on_related('self', type='forward')
+    @depend_on_related("self", type="forward")
     def path(self):
         if self.parent_forum:
-            return self.parent_forum.path + self.title + '/'
+            return self.parent_forum.path + self.title + "/"
         else:
-            return '/' + self.title + '/'
+            return "/" + self.title + "/"
 
 
 class Post(TaggedModel):
     forum = models.ForeignKey(Forum, blank=True, null=True, on_delete=models.CASCADE)
-    author = models.ForeignKey('Member', blank=True, null=True, on_delete=models.CASCADE)
-    response_to = models.ForeignKey('self', blank=True, null=True, related_name='responses', on_delete=models.CASCADE)
+    author = models.ForeignKey(
+        "Member", blank=True, null=True, on_delete=models.CASCADE
+    )
+    response_to = models.ForeignKey(
+        "self",
+        blank=True,
+        null=True,
+        related_name="responses",
+        on_delete=models.CASCADE,
+    )
     title = models.CharField(max_length=255, blank=True)
 
     # Brings down the forum title
@@ -141,15 +153,15 @@ class Post(TaggedModel):
         return self.forum.title
 
     @denormalized(models.CharField, max_length=255)
-    @depend_on_related('Member', foreign_key="author")
+    @depend_on_related("Member", foreign_key="author")
     def author_name(self):
         if self.author:
             return self.author.name
         else:
-            return ''
+            return ""
 
     @denormalized(models.PositiveIntegerField)
-    @depend_on_related('self', type='backward')
+    @depend_on_related("self", type="backward")
     def response_count(self):
         # Work around odd issue during testing with PostgresDB
         if not self.pk:
@@ -161,12 +173,12 @@ class Post(TaggedModel):
 
 class PostExtend(models.Model):
     # Test also OneToOneField
-    post = models.OneToOneField('Post', on_delete=models.CASCADE)
+    post = models.OneToOneField("Post", on_delete=models.CASCADE)
 
     @denormalized(models.CharField, max_length=255)
-    @depend_on_related('Post')
+    @depend_on_related("Post")
     def author_name(self):
-        return post.author.name
+        return self.post.author.name
 
 
 class Attachment(models.Model):
@@ -175,9 +187,11 @@ class Attachment(models.Model):
     post = models.ForeignKey(Post, blank=True, null=True, on_delete=models.CASCADE)
 
     cachekey = CacheKeyField()
-    cachekey.depend_on_related('Post')
+    cachekey.depend_on_related("Post")
 
-    @denormalized(models.ForeignKey, Forum, blank=True, null=True, on_delete=models.CASCADE)
+    @denormalized(
+        models.ForeignKey, Forum, blank=True, null=True, on_delete=models.CASCADE
+    )
     @depend_on_related(Post)
     def forum(self):
         if self.post and self.post.forum:
@@ -193,20 +207,20 @@ class Attachment(models.Model):
 class Member(models.Model):
     first_name = models.CharField(max_length=255)
     name = models.CharField(max_length=255)
-    bookmarks = models.ManyToManyField('Post', blank=True)
+    bookmarks = models.ManyToManyField("Post", blank=True)
 
     cachekey = CacheKeyField()
-    cachekey.depend_on_related('Post', foreign_key='bookmarks')
+    cachekey.depend_on_related("Post", foreign_key="bookmarks")
 
     @denormalized(models.CharField, max_length=255)
     def full_name(self):
         return u"%s %s" % (self.first_name, self.name)
 
     @denormalized(models.TextField, null=True, blank=True)
-    @depend_on_related('Post', foreign_key="bookmarks")
+    @depend_on_related("Post", foreign_key="bookmarks")
     def bookmark_titles(self):
         if self.id:
-            return '\n'.join([p.title for p in self.bookmarks.all()])
+            return "\n".join([p.title for p in self.bookmarks.all()])
 
 
 class SkipPost(models.Model):
@@ -248,7 +262,15 @@ class SkipCommentWithoutSkip(SkipComment):
 
 class SkipCommentWithSkip(SkipComment):
     # Skip feature test model with a skip parameter on an updatable field.
-    @denormalized(models.TextField, skip=('updated_on',))
+    @denormalized(models.TextField, skip=("updated_on",))
+    @depend_on_related(SkipPost)
+    def post_text(self):
+        return self.post.text
+
+
+class SkipCommentWithOnly(SkipComment):
+    # Skip feature test model with a skip parameter on an updatable field.
+    @denormalized(models.TextField, only=("text",))
     @depend_on_related(SkipPost)
     def post_text(self):
         return self.post.text
@@ -260,14 +282,14 @@ class SkipCommentWithAttributeSkip(SkipComment):
     def post_text(self):
         return self.post.text
 
-    denorm_always_skip = ('updated_on',)
+    denorm_always_skip = ("updated_on",)
 
 
 class Team(models.Model):
     @denormalized(models.TextField)
-    @depend_on_related('Competitor')
+    @depend_on_related("Competitor")
     def user_string(self):
-        return ', '.join(sorted([u.name for u in self.competitor_set.all()]))
+        return ", ".join(sorted([u.name for u in self.competitor_set.all()]))
 
 
 class Competitor(models.Model):
@@ -275,22 +297,30 @@ class Competitor(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE)
 
 
-
 if connection.vendor != "sqlite":
+
     class FilterSumModel(models.Model):
         # Simple count() aggregate
-        active_item_sum = SumField('counts', field='active_item_count', filter={'age__gte': 18})
+        active_item_sum = SumField(
+            "counts", field="active_item_count", filter={"age__gte": 18}
+        )
 
     class FilterSumItem(models.Model):
-        parent = models.ForeignKey(FilterSumModel, related_name='counts', on_delete=models.CASCADE)
+        parent = models.ForeignKey(
+            FilterSumModel, related_name="counts", on_delete=models.CASCADE
+        )
         age = models.IntegerField(default=18)
         active_item_count = models.PositiveIntegerField(default=False)
 
     class FilterCountModel(models.Model):
         # Simple count() aggregate
-        active_item_count = CountField('items', filter={'active__exact': True}, exclude={'text': ''})
+        active_item_count = CountField(
+            "items", filter={"active__exact": True}, exclude={"text": ""}
+        )
 
     class FilterCountItem(models.Model):
-        parent = models.ForeignKey(FilterCountModel, related_name='items', on_delete=models.CASCADE)
+        parent = models.ForeignKey(
+            FilterCountModel, related_name="items", on_delete=models.CASCADE
+        )
         active = models.BooleanField(default=False)
-        text = models.CharField(max_length=10, default='')
+        text = models.CharField(max_length=10, default="")

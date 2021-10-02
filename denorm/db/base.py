@@ -1,4 +1,4 @@
-from django.core.exceptions import FieldDoesNotExist
+from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 from django.db import connection, connections, models
 
 from ..helpers import remote_field_model
@@ -67,7 +67,15 @@ def get_fields_with_model(model, meta):
 
 class Trigger(object):
     def __init__(
-        self, subject, time, event, actions, content_type, using=None, skip=None
+        self,
+        subject,
+        time,
+        event,
+        actions,
+        content_type,
+        using=None,
+        skip=None,
+        only=None,
     ):
         self.subject = subject
         self.time = time
@@ -111,11 +119,29 @@ class Trigger(object):
             self.model = subject.model
             self.db_table = self.model._meta.db_table
             skip = skip or () + getattr(self.model, "denorm_always_skip", ())
+            only = only or () + getattr(self.model, "denorm_always_only", ())
             fields_with_model = get_fields_with_model(subject.model, self.model._meta)
+            field_names_with_model = [k.attname for k, v in fields_with_model]
+
+            if only:
+                # ``only`` parametr was given and it is expected to be an iterable of field
+                # names, which will be watched for updates (an opposite to ``skip`` parameter).
+                # Let's see if every single field name passed actually exists:
+                for field_name in only:
+                    if field_name not in field_names_with_model:
+                        raise FieldDoesNotExist(
+                            f'Field name "{field_name}", passed as a parameter to "only" to a trigger for class or '
+                            f'included in class\' "denorm_always_only" for class {self.subject}, '
+                            f'does not exist. Field names available: {", ".join(field_names_with_model)}'
+                        )
+            else:
+                # not only
+                only = field_names_with_model
+
             self.fields = [
                 (k.attname, k.db_type(connection=self.connection))
                 for k, v in fields_with_model
-                if not v and k.attname not in skip
+                if not v and k.attname not in skip and k.attname in only
             ]
 
         elif hasattr(subject, "_meta"):
@@ -124,18 +150,39 @@ class Trigger(object):
             # FIXME: need to check get_parent_list and add triggers to those
             # The below will only check the fields on *this* model, not parents
             skip = skip or () + getattr(self.model, "denorm_always_skip", ())
+            only = only or () + getattr(self.model, "denorm_always_only", ())
 
             self.fields = []
 
             from django.db.models.fields.related import ForeignObjectRel
 
             fields_with_model = get_fields_with_model(subject, self.model._meta)
+            field_names_with_model = [
+                k.attname
+                for k, v in fields_with_model
+                if not isinstance(k, ForeignObjectRel)
+            ]
+            if only:
+                # ``only`` parametr was given and it is expected to be an iterable of field
+                # names, which will be watched for updates (an opposite to ``skip`` parameter).
+                # Let's see if every single field name passed actually exists:
+                for field_name in only:
+                    if field_name not in field_names_with_model:
+                        raise FieldDoesNotExist(
+                            f'Field name "{field_name}", passed as a parameter to "only" to a trigger for class or '
+                            f'included in class\' "denorm_always_only" for class {self.subject}, '
+                            f'does not exist. Field names available: {", ".join(field_names_with_model)}'
+                        )
+            else:
+                # not only
+                only = field_names_with_model
 
             for k, v in fields_with_model:
                 if isinstance(k, ForeignObjectRel):
                     pass
                 else:
-                    if not v and k.attname not in skip:
+                    if not v and k.attname not in skip and k.attname in only:
+
                         self.fields.append(
                             (k.attname, k.db_type(connection=self.connection))
                         )
@@ -154,6 +201,14 @@ class Trigger(object):
                         f'included in class\' "denorm_always_skip" for class {self.subject}, '
                         f'does not exist. Field names available: {", ".join(field_names)}'
                     )
+
+        # Check if any fields left:
+        if not self.fields:
+            raise ImproperlyConfigured(
+                f"It looks like there are no field names defined for a trigger defined for class {self.subject}. "
+                f'This situation could occur if you excluded all of the fields using "only" parameter. '
+                f'Please give less broad range of fields to "only" or use "skip" instead. '
+            )
 
     def append(self, actions):
         if not isinstance(actions, list):
