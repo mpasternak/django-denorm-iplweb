@@ -10,6 +10,8 @@ def denorm_install_triggers_after_migrate(using, **kwargs):
 
 
 class DenormAppConfig(AppConfig):
+    name = "denorm"
+
     def ready(self):
         if getattr(settings, "DENORM_INSTALL_TRIGGERS_AFTER_MIGRATE", True):
             post_migrate.connect(denorm_install_triggers_after_migrate, sender=self)
