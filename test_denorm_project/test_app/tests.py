@@ -756,7 +756,7 @@ class CommandsTestCase(TransactionTestCase):
 
     def test_makemigrations(self):
         "Test makemigrations command."
-        call_command("makemigrations")
+        call_command("makemigrations", verbosity=0)
 
     def test_denorm_init(self):
         "Test denorm_init command."
