@@ -706,7 +706,6 @@ class CountDenorm(AggregateDenorm):
 def rebuildall(verbose=False, model_name=None, field_name=None):
     """
     Updates all models containing denormalized fields.
-    Used by the 'denormalize' management command.
     """
     from .models import DirtyInstance
 

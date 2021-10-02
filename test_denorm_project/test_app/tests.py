@@ -1,7 +1,6 @@
 from io import StringIO
 from unittest.mock import patch
 
-import django
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management import call_command
@@ -790,9 +789,3 @@ class CommandsTestCase(TransactionTestCase):
         call_command("denorm_sql")
 
         sys.stdout = sys.__stdout__
-
-    def test_denormalize(self):
-        "Test denorm_init command."
-        self.assertRaises(
-            django.core.management.base.CommandError, call_command, "denormalize"
-        )
