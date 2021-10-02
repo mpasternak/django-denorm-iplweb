@@ -62,7 +62,9 @@ class Trigger(base.Trigger):
     def name(self):
         name = base.Trigger.name(self)
         if self.content_type_field:
-            name += "_%s" % self.content_type
+            name += f"_{self.content_type}"
+        if self.func_name:
+            name += f"_{self.func_name}"
         return name
 
     def sql(self):

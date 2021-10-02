@@ -33,6 +33,12 @@ class TriggerActionInsert(TriggerAction):
         self.columns = columns
         self.values = values
 
+    def __repr__(self):
+        return (
+            f"<TriggerActionInsert object at {id(self):#02x} "
+            f"INSERT INTO {self.model}({self.columns}) values({self.values})>"
+        )
+
     def sql(self):
         raise NotImplementedError
 
@@ -66,6 +72,12 @@ def get_fields_with_model(model, meta):
 
 
 class Trigger(object):
+    def __repr__(self):
+        return (
+            f"{object.__repr__(self)} for model {self.subject}, {self.time} {self.event} "
+            f"perform {[str(action) for action in self.actions]}"
+        )
+
     def __init__(
         self,
         subject,
@@ -76,6 +88,7 @@ class Trigger(object):
         using=None,
         skip=None,
         only=None,
+        func_name=None,
     ):
         self.subject = subject
         self.time = time
@@ -85,6 +98,7 @@ class Trigger(object):
         self.actions = []
         self.append(actions)
         self.using = using
+        self.func_name = func_name
 
         if self.using:
             self.connection = connections[self.using]
@@ -118,8 +132,8 @@ class Trigger(object):
         elif isinstance(subject, models.ForeignKey):
             self.model = subject.model
             self.db_table = self.model._meta.db_table
-            skip = skip or () + getattr(self.model, "denorm_always_skip", ())
-            only = only or () + getattr(self.model, "denorm_always_only", ())
+            skip = (skip or ()) + getattr(self.model, "denorm_always_skip", ())
+            only = (only or ()) + getattr(self.model, "denorm_always_only", ())
             fields_with_model = get_fields_with_model(subject.model, self.model._meta)
             field_names_with_model = [k.attname for k, v in fields_with_model]
 
@@ -149,8 +163,8 @@ class Trigger(object):
             self.db_table = self.model._meta.db_table
             # FIXME: need to check get_parent_list and add triggers to those
             # The below will only check the fields on *this* model, not parents
-            skip = skip or () + getattr(self.model, "denorm_always_skip", ())
-            only = only or () + getattr(self.model, "denorm_always_only", ())
+            skip = (skip or ()) + getattr(self.model, "denorm_always_skip", ())
+            only = (only or ()) + getattr(self.model, "denorm_always_only", ())
 
             self.fields = []
 
@@ -218,7 +232,9 @@ class Trigger(object):
             self.actions.append(action)
 
     def name(self):
-        return "_".join(["denorm", self.time, "row", self.event, "on", self.db_table])
+        return "_".join(
+            ["denorm", self.time[:3], "row", self.event[:3], "on", self.db_table]
+        )
 
     def sql(self):
         raise NotImplementedError

@@ -29,12 +29,3 @@ if "DENORM_BACKEND" in connections[DEFAULT_DB_ALIAS].settings_dict:
 else:
     engine = connections[DEFAULT_DB_ALIAS].settings_dict["ENGINE"]
     backend = backend_for_dbname(engine.rsplit(".", 1)[1])
-
-try:
-    triggers = __import__(".".join([backend, "triggers"]), {}, {}, [""])
-except ImportError:
-    raise ImportError(
-        """There is no django-denorm-iplweb database module for the engine '%s'. Please either choose a supported
-        one, or remove 'denorm' from INSTALLED_APPS.\n"""
-        % backend
-    )

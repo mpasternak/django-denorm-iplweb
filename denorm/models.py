@@ -18,6 +18,10 @@ class DirtyInstance(models.Model):
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.TextField(blank=True, null=True)
     content_object = GenericForeignKey()
+    func_name = models.TextField(blank=True, null=True)
 
     def __str__(self):
-        return u"DirtyInstance: %s,%s" % (self.content_type, self.object_id)
+        ret = f"DirtyInstance: {self.content_type}, {self.object_id}"
+        if self.func_name:
+            ret += f", {self.func_name}"
+        return ret

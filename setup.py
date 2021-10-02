@@ -21,7 +21,6 @@ setup(
     packages=[
         "denorm",
         "denorm.db",
-        "denorm.db.postgresql",
         "denorm.management",
         "denorm.management.commands",
         "denorm.migrations",

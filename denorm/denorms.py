@@ -172,8 +172,8 @@ class BaseCallbackDenorm(Denorm):
         # to our callback.
         for dependency in self.depend:
             trigger_list += dependency.get_triggers(using=using)
-
-        return trigger_list + super(BaseCallbackDenorm, self).get_triggers(using=using)
+        ret = trigger_list + super(BaseCallbackDenorm, self).get_triggers(using=using)
+        return ret
 
 
 class CallbackDenorm(BaseCallbackDenorm):
@@ -788,7 +788,9 @@ def flush(verbose=False):
         from .models import DirtyInstance
 
         # If possible, dont flush the same object twice
-        qs = DirtyInstance.objects.all().distinct("content_type", "object_id")
+        qs = DirtyInstance.objects.all().distinct(
+            "content_type", "object_id", "func_name"
+        )
 
         # DirtyInstance table is empty -> all data is consistent -> we're done
         if not qs:
@@ -803,10 +805,23 @@ def flush(verbose=False):
             if verbose:
                 i += 1
                 logger.info("flushing %s of %s all dirty instances" % (i, size))
-            if dirty_instance.content_object:
-                dirty_instance.content_object.save()
+
+            obj = dirty_instance.content_object
+            func_name = dirty_instance.func_name
+            if obj:
+                if func_name and getattr(obj, func_name):
+                    # It has 'func_name' attr, rebuild only this one attribute
+                    obj.save(
+                        update_fields=[
+                            dirty_instance.func_name,
+                        ]
+                    )
+                else:
+                    # func_name not given or no such func_name, rebuild everything
+                    dirty_instance.content_object.save()
 
             DirtyInstance.objects.filter(
                 content_type_id=dirty_instance.content_type_id,
                 object_id=dirty_instance.object_id,
+                func_name=func_name,
             ).delete()

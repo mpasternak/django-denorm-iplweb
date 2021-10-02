@@ -20,4 +20,6 @@ Changelog
 * post_migration signal causes trigger rebuild,
 * ``rebuild_triggers`` command to rebuild triggers,
 * deprecated command ``denormalize`` removed,
-* field names given as a parameter to ``skip`` or ``denorm_always_skip`` are checked if they exist.
+* field names given as a parameter to ``skip`` or ``denorm_always_skip`` are checked if they exist,
+* triggers and functions names, generated for ``@depend_on_related`` include function (attribute) name,
+* DirtyInstance includes func_name, which is a function name to rebuild only this single parameter
