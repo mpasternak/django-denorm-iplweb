@@ -2,7 +2,7 @@
 import abc
 import logging
 
-from django.apps import apps as gmodels
+from django.apps import apps
 from django.contrib import contenttypes
 from django.db import connection, connections
 from django.db.models import ManyToManyField, sql
@@ -71,7 +71,7 @@ def get_alldenorms():
     Get all denormalizations.
     """
     alldenorms = []
-    for model in gmodels.get_models(include_auto_created=True):
+    for model in apps.get_models(include_auto_created=True):
         if not model._meta.proxy:
             for field in model._meta.fields:
                 if hasattr(field, "denorm"):
