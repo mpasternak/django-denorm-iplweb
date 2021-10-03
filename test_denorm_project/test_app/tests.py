@@ -155,7 +155,7 @@ class TestDenormalisation(TransactionTestCase):
 
     def test_depends_related(self):
         """
-        Test the DependsOnRelated stuff.
+        test_depends_related -- Test the DependsOnRelated stuff.
         """
         # Make a forum, check it's got no posts
         f1 = models.Forum.objects.create(title="forumone")
@@ -167,7 +167,6 @@ class TestDenormalisation(TransactionTestCase):
         p1 = models.Post.objects.create(forum=f1)
         # Has the post count updated?
         self.assertEqual(models.Forum.objects.get(id=f1.id).post_count, 1)
-
         denorm.flush()
 
         # Check its title, in p1 and the DB
@@ -249,12 +248,13 @@ class TestDenormalisation(TransactionTestCase):
 
     def test_bulk_update(self):
         """
-        Test the DependsOnRelated stuff.
+        test_bulk_update -- Test the DependsOnRelated stuff.
         """
         f1 = models.Forum.objects.create(title="forumone")
         f2 = models.Forum.objects.create(title="forumtwo")
         p1 = models.Post.objects.create(forum=f1)
         p2 = models.Post.objects.create(forum=f2)
+        # denorms.INTERACTIVE = True
         denorm.flush()
 
         self.assertEqual(models.Post.objects.get(id=p1.id).forum_title, "forumone")

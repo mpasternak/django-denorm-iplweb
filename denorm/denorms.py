@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 import abc
 import logging
+import traceback
 
 from django.apps import apps
 from django.contrib import contenttypes
-from django.db import connection, connections
+from django.db import connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
 from django.db.models.manager import Manager
@@ -772,6 +773,9 @@ def build_triggerset(using=None):
     return triggerset
 
 
+INTERACTIVE = False
+
+
 def flush(verbose=False):
     """
     Updates all model instances marked as dirty by the DirtyInstance
@@ -783,55 +787,63 @@ def flush(verbose=False):
     # Loop until break.
     # We may need multiple passes, because an update on one instance
     # may cause an other instance to be marked dirty (dependency chains)
+
+    # Get all dirty markers
+    from .models import DirtyInstance
+
     while True:
-        # Get all dirty markers
-        from .models import DirtyInstance
 
-        # If possible, dont flush the same object twice
-        qs = DirtyInstance.objects.all().distinct(
-            "content_type", "object_id", "func_name"
-        )
+        with transaction.atomic():
 
-        # DirtyInstance table is empty -> all data is consistent -> we're done
-        if not qs:
-            break
+            dirty_instance = (
+                DirtyInstance.objects.process_next()[:1]
+                .select_for_update(of=("self",), skip_locked=True)
+                .first()
+            )
 
-        # Call save() on all dirty instances, causing the self_save_handler()
-        # getting called by the pre_save signal.
-        if verbose:
-            size = qs.count()
-            i = 0
-        for dirty_instance in qs.iterator():
-            if verbose:
-                i += 1
-                logger.info("flushing %s of %s all dirty instances" % (i, size))
+            if not dirty_instance:
+                # Table is empty, leave
+                break
 
-            obj = dirty_instance.content_object
-            func_name = dirty_instance.func_name
-            if obj:
-                if func_name and getattr(obj, func_name):
-                    # It has 'func_name' attr, rebuild only this one attribute
-                    obj.save(
-                        update_fields=[
-                            dirty_instance.func_name,
-                        ]
-                    )
-                else:
-                    # func_name not given or no such func_name, rebuild everything
-                    dirty_instance.content_object.save()
+            # Find all similar objects and lock them
+            dirty_instance.find_similar().select_for_update(
+                of=("self",), skip_locked=True
+            )
 
-            if func_name:
-                DirtyInstance.objects.filter(
-                    content_type_id=dirty_instance.content_type_id,
-                    object_id=dirty_instance.object_id,
-                    func_name=func_name,
-                ).delete()
+            # Record was just locked! Leave the transaction and get the next one
+            if not dirty_instance:
+                print("MISS!")
                 continue
 
-            # If there was no func_name given, it means that the whole object was
-            # rebuilt, so we can remove other requests to rebuild it, including those
-            # with func_name given:
-            DirtyInstance.objects.filter(
-                content_type_id=dirty_instance.content_type_id,
-                object_id=dirty_instance.object_id,
-            ).delete()
+            # Mark DirtyInstance as being processed
+            dirty_instance.mark_as_being_processed()
+
+            if INTERACTIVE:
+                DirtyInstance.objects.dump()
+                breakpoint()
+
+            obj = dirty_instance.content_object
+            if obj is None:
+                dirty_instance.mark_as_failed("obj does not exist anymore")
+                dirty_instance.delete_this_and_similar()
+                continue
+
+            # Call save() on object, causing the self_save_handler()
+            # getting called by the pre_save signal. Optionally, use func_name
+            func_name = dirty_instance.func_name
+            kw = {}
+            if func_name and getattr(obj, func_name):
+                # It has 'func_name' attr, rebuild only this one attribute
+                kw = dict(update_fields=[func_name])
+
+            try:
+                obj.save(**kw)
+
+                dirty_instance.delete_this_and_similar()
+
+            except Exception:
+                # TODO: full traceback
+                dirty_instance.mark_as_failed(traceback.format_exc())
+
+    # TODO: keep housekeeping to single thread, to reduce db load
+    DirtyInstance.objects.housekeeping()

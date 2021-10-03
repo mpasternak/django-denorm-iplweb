@@ -5,6 +5,7 @@ Changelog
 -----
 
 * first release of django-denorm-iplweb,
+* based on the high-quality code of the original django-denorm_
 * supported versions: Python 3.8, 3.9, Django 3.0, 3.1, 3.2,
 * dropped support for MySQL,
 * dropped support for SQLite,
@@ -23,3 +24,8 @@ Changelog
 * field names given as a parameter to ``skip`` or ``denorm_always_skip`` are checked if they exist,
 * triggers and functions names, generated for ``@depend_on_related`` include function (attribute) name,
 * DirtyInstance includes func_name, which is a function name to rebuild only this single parameter
+* ability to run multiple ``denorm_queue`` commands, which (thanks to the magic of row locking) should
+  automatically process queue in a paralell manner.
+
+
+.. _django-denorm: https://github.com/django-denorm/django-denorm
