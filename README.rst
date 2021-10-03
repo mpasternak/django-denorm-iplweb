@@ -19,11 +19,14 @@ Django versions supported:
 Reasons for this fork being PostgreSQL-only:
 
 * lack of resources for maintaning other backends,
-* usage of ``LISTEN``/``NOTIFY`` mechanisms, available in PostgreSQL.
+* usage of ``LISTEN``/``NOTIFY`` mechanisms, available in PostgreSQL,
+* many more improvements, for example the ability to run multiple instances of cache
+  rebuilder (see docs_)
 
 Patches welcome!
 
 .. _django-denorm: https://github.com/django-denorm/django-denorm
+.. _docs: https://django-denorm-iplweb.readthedocs.io/en/latest/history.html#id1
 
 Documentation is available from http://django-denorm-iplweb.github.io/django-denorm-iplweb/
 
