@@ -820,8 +820,18 @@ def flush(verbose=False):
                     # func_name not given or no such func_name, rebuild everything
                     dirty_instance.content_object.save()
 
+            if func_name:
+                DirtyInstance.objects.filter(
+                    content_type_id=dirty_instance.content_type_id,
+                    object_id=dirty_instance.object_id,
+                    func_name=func_name,
+                ).delete()
+                continue
+
+            # If there was no func_name given, it means that the whole object was
+            # rebuilt, so we can remove other requests to rebuild it, including those
+            # with func_name given:
             DirtyInstance.objects.filter(
                 content_type_id=dirty_instance.content_type_id,
                 object_id=dirty_instance.object_id,
-                func_name=func_name,
             ).delete()
