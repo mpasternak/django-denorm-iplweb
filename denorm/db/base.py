@@ -88,7 +88,7 @@ class Trigger(object):
         using=None,
         skip=None,
         only=None,
-        func_name=None,
+        func=None,
     ):
         self.subject = subject
         self.time = time
@@ -98,7 +98,7 @@ class Trigger(object):
         self.actions = []
         self.append(actions)
         self.using = using
-        self.func_name = func_name
+        self.func = func
 
         if self.using:
             self.connection = connections[self.using]
@@ -233,7 +233,7 @@ class Trigger(object):
 
     def name(self):
         return "_".join(
-            ["denorm", self.time[:3], "row", self.event[:3], "on", self.db_table]
+            ["d", self.time[:3], "row", self.event[:3], "on", self.db_table]
         )
 
     def sql(self):

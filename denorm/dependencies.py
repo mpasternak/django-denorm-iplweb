@@ -41,14 +41,14 @@ class DependOnRelated(DenormDependency):
         type=None,
         skip=None,
         only=None,
-        func_name=None,
+        func=None,
     ):
         self.other_model = othermodel
         self.fk_name = foreign_key
         self.type = type
         self.skip = skip or ()
         self.only = only or ()
-        self.func_name = func_name
+        self.func = func
 
     def setup(self, this_model):
         super(DependOnRelated, self).setup(this_model)
@@ -174,7 +174,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -185,7 +185,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -196,7 +196,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
             ]
 
@@ -236,7 +236,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -247,7 +247,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -258,7 +258,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
             ]
 
@@ -314,7 +314,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.field,
@@ -325,7 +325,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.field,
@@ -336,7 +336,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
             ]
 
@@ -379,7 +379,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                         using,
                         self.skip,
                         self.only,
-                        self.func_name,
+                        self.func,
                     )
                 )
 
@@ -405,7 +405,7 @@ class CallbackDependOnRelated(DependOnRelated):
         type=None,
         skip=None,
         only=None,
-        func_name=None,
+        func=None,
     ):
         """
         Attaches a dependency to a callable, indicating the return value depends on
@@ -435,12 +435,12 @@ class CallbackDependOnRelated(DependOnRelated):
             Use this to specify what fields should be watched instead of every field on save().
             Only those fields will be checked. Opposite of ``skip``.
 
-        func_name
-            String name of a function, that this is a callback to.
+        func
+            Reference to function, that this is a callback to.
 
         """
         super(CallbackDependOnRelated, self).__init__(
-            othermodel, foreign_key, type, skip=skip, only=only, func_name=func_name
+            othermodel, foreign_key, type, skip=skip, only=only, func=func
         )
 
     def get_triggers(self, using):
@@ -480,7 +480,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     (
                         content_type,
                         self.this_model._meta.pk.get_attname_column()[1],
-                        qv(self.func_name),
+                        qv(self.func.__name__),
                     ),
                     **{
                         self.field.get_attname_column()[1]: "NEW.%s"
@@ -496,7 +496,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     (
                         content_type,
                         self.this_model._meta.pk.get_attname_column()[1],
-                        qv(self.func_name),
+                        qv(self.func.__name__),
                     ),
                     **{
                         self.field.get_attname_column()[1]: "OLD.%s"
@@ -514,7 +514,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -525,7 +525,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -536,7 +536,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
             ]
 
@@ -554,7 +554,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     (
                         content_type,
                         self.field.get_attname_column()[1],
-                        qv(self.func_name),
+                        qv(self.func.__name__),
                     ),
                     **{
                         self.field.model._meta.pk.get_attname_column()[1]: "NEW.%s"
@@ -568,7 +568,7 @@ class CallbackDependOnRelated(DependOnRelated):
                 values=(
                     content_type,
                     "OLD.%s" % self.field.get_attname_column()[1],
-                    qv(self.func_name),
+                    qv(self.func.__name__),
                 ),
             )
             return [
@@ -581,7 +581,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -592,7 +592,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.other_model,
@@ -603,7 +603,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
             ]
 
@@ -631,12 +631,12 @@ class CallbackDependOnRelated(DependOnRelated):
             action_m2m_new = triggers.TriggerActionInsert(
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
-                values=(content_type, "NEW.%s" % column_name, qv(self.func_name)),
+                values=(content_type, "NEW.%s" % column_name, qv(self.func.__name__)),
             )
             action_m2m_old = triggers.TriggerActionInsert(
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
-                values=(content_type, "OLD.%s" % column_name, qv(self.func_name)),
+                values=(content_type, "OLD.%s" % column_name, qv(self.func.__name__)),
             )
 
             trigger_list = [
@@ -649,7 +649,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.field,
@@ -660,7 +660,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
                 triggers.Trigger(
                     self.field,
@@ -671,7 +671,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     using,
                     self.skip,
                     self.only,
-                    self.func_name,
+                    self.func,
                 ),
             ]
 
@@ -689,7 +689,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     columns=("content_type_id", "object_id", "func_name"),
                     values=triggers.TriggerNestedSelect(
                         self.field.m2m_db_table(),
-                        (content_type, column_name, qv(self.func_name)),
+                        (content_type, column_name, qv(self.func.__name__)),
                         **{
                             reverse_column_name: "NEW.%s"
                             % qn(self.other_model._meta.pk.get_attname_column()[1])
@@ -706,7 +706,7 @@ class CallbackDependOnRelated(DependOnRelated):
                         using,
                         self.skip,
                         self.only,
-                        self.func_name,
+                        self.func,
                     )
                 )
 
@@ -729,11 +729,11 @@ def make_depend_decorator(Class):
                 func.depend = []
 
             # Pass function name to CallbackDependOnRelated
-            if "func_name" in kwargs:
+            if "func" in kwargs:
                 raise NameError(
-                    "Argument 'func_name' is restricted, please use different one."
+                    "Argument 'func' is restricted, please use different one."
                 )
-            kwargs["func_name"] = func.__name__
+            kwargs["func"] = func
 
             func.depend.append((Class, args, kwargs))
             return func
