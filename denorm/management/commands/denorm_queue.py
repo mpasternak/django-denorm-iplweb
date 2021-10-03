@@ -45,7 +45,7 @@ class Command(BaseCommand):
                     pg_con.poll()
                     while pg_con.notifies:
                         pg_con.notifies.pop()
-                        denorms.flush()
+                    denorms.flush()
             except KeyboardInterrupt:
                 sys.exit()
             if run_once:
