@@ -140,12 +140,9 @@ class DirtyInstance(models.Model):
         """Find similar objects to this one. Same content_type, same object_id; func_name if this
         object has func_name, but in case of no func name -- find all objects, as no func name
         means even broader scope:"""
-        kw = {}
-        if self.func_name:
-            kw["func_name"] = self.func_name
-
         return DirtyInstance.objects.filter(
-            content_type=self.content_type, object_id=self.object_id, **kw
+            content_type=self.content_type,
+            object_id=self.object_id,
         )
 
     def delete_similar(self):

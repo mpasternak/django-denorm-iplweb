@@ -805,9 +805,11 @@ def flush(verbose=False):
                 # Table is empty, leave
                 break
 
-            # Find all similar objects and lock them
-            dirty_instance.find_similar().select_for_update(
-                of=("self",), skip_locked=True
+            # Find all similar objects (= updates to this instance) and lock them
+            func_names = set(
+                dirty_instance.find_similar()
+                .select_for_update(of=("self",), skip_locked=True)
+                .values_list("func_name", flat=True)
             )
 
             # Record was just locked! Leave the transaction and get the next one
@@ -828,17 +830,25 @@ def flush(verbose=False):
                 dirty_instance.delete_this_and_similar()
                 continue
 
-            # Call save() on object, causing the self_save_handler()
-            # getting called by the pre_save signal. Optionally, use func_name
-            func_name = dirty_instance.func_name
+            # At this point, all_func_names contains an iterable with all
+            # func_names attributes requested re-indexing.
             kw = {}
-            if func_name and getattr(obj, func_name):
-                # It has 'func_name' attr, rebuild only this one attribute
-                kw = dict(update_fields=[func_name])
 
+            if None not in func_names:
+                # If there's a None
+                # in it, we might as well save the whole object without any filtering.
+                # If not, we want to pass a list of all updated fields to update_fields,
+                # but first we need to check if they're callable and present on the object.
+                update_fields = []
+                for func_name in func_names:
+                    _f = getattr(obj, func_name)
+                    if _f and callable(_f):
+                        update_fields.append(func_name)
+
+                if update_fields:
+                    kw = dict(update_fields=update_fields)
             try:
                 obj.save(**kw)
-
                 dirty_instance.delete_this_and_similar()
 
             except Exception:
