@@ -5,6 +5,7 @@ import traceback
 
 from django.apps import apps
 from django.contrib import contenttypes
+from django.core.exceptions import FieldDoesNotExist
 from django.db import connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
@@ -841,9 +842,11 @@ def flush(verbose=False):
                 # but first we need to check if they're callable and present on the object.
                 update_fields = []
                 for func_name in func_names:
-                    _f = getattr(obj, func_name)
-                    if _f and callable(_f):
+                    try:
+                        obj._meta.get_field(func_name)
                         update_fields.append(func_name)
+                    except FieldDoesNotExist:
+                        continue
 
                 if update_fields:
                     kw = dict(update_fields=update_fields)
