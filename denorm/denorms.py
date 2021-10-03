@@ -705,7 +705,7 @@ class CountDenorm(AggregateDenorm):
         return self.get_decrement_value(using)
 
 
-def rebuildall(verbose=False, model_name=None, field_name=None):
+def rebuildall(model_name=None, field_name=None, verbose=False):
     """
     Updates all models containing denormalized fields.
     """
@@ -717,10 +717,10 @@ def rebuildall(verbose=False, model_name=None, field_name=None):
         current_app_label = denorm.model._meta.app_label
         current_model_name = denorm.model._meta.model.__name__
         current_app_model = "%s.%s" % (current_app_label, current_model_name)
-        if model_name is None or model_name in (
-            current_app_label,
-            current_model_name,
-            current_app_model,
+        if model_name is None or model_name.lower() in (
+            current_app_label.lower(),
+            current_model_name.lower(),
+            current_app_model.lower(),
         ):
             if field_name is None or field_name == denorm.fieldname:
                 models.setdefault(denorm.model, []).append(denorm)
@@ -740,10 +740,10 @@ def rebuildall(verbose=False, model_name=None, field_name=None):
                 i += 1
         # create DirtyInstance for all objects, so the rebuild is done during flush
         content_type = contenttypes.models.ContentType.objects.get_for_model(model)
-        for instance in model.objects.all():
+        for pk in model.objects.values_list("pk", flat=True):
             DirtyInstance.objects.create(
                 content_type=content_type,
-                object_id=instance.pk,
+                object_id=pk,
             )
     flush(verbose)
 
