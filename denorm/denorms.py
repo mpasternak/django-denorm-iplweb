@@ -777,7 +777,7 @@ def build_triggerset(using=None):
 INTERACTIVE = False
 
 
-def flush(verbose=False):
+def flush(verbose=False, run_once=False):
     """
     Updates all model instances marked as dirty by the DirtyInstance
     model.
@@ -792,7 +792,11 @@ def flush(verbose=False):
     # Get all dirty markers
     from .models import DirtyInstance
 
+    cnt = 0
     while True:
+        cnt += 1
+        if cnt == 2 and run_once:
+            break
 
         with transaction.atomic():
 
