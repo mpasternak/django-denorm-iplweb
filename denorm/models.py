@@ -90,7 +90,7 @@ class DirtyInstanceManager(models.Manager):
             print("\n", table.draw(), f"\nTotal: {len(rows)}")
 
         def _ugly():
-            for row in _rows:
+            for row in _rows():
                 print(row)
 
         try:
