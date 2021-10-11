@@ -705,11 +705,24 @@ class CountDenorm(AggregateDenorm):
         return self.get_decrement_value(using)
 
 
-def rebuildall(model_name=None, field_name=None, verbose=False):
+def rebuild_instances_of(model):
+    # create DirtyInstance for all models
+
+    from .models import DirtyInstance
+
+    content_type = contenttypes.models.ContentType.objects.get_for_model(model)
+    DirtyInstance.objects.bulk_create(
+        [
+            DirtyInstance(content_type_id=content_type.pk, object_id=pk)
+            for pk in model.objects.values_list("pk", flat=True)
+        ]
+    )
+
+
+def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
     """
     Updates all models containing denormalized fields.
     """
-    from .models import DirtyInstance
 
     alldenorms = get_alldenorms()
     models = {}
@@ -738,14 +751,11 @@ def rebuildall(model_name=None, field_name=None, verbose=False):
                 )
                 logger.info(msg)
                 i += 1
-        # create DirtyInstance for all objects, so the rebuild is done during flush
-        content_type = contenttypes.models.ContentType.objects.get_for_model(model)
-        for pk in model.objects.values_list("pk", flat=True):
-            DirtyInstance.objects.create(
-                content_type=content_type,
-                object_id=pk,
-            )
-    flush(verbose)
+
+        rebuild_instances_of(model)
+
+    if flush_:
+        flush(verbose)
 
 
 def drop_triggers(using=None):

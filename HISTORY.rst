@@ -1,6 +1,12 @@
 Changelog
 =========
 
+0.5.1
+-----
+
+* optimized denorms.rebuildall, using bulk_create,
+* denorm_rebuild command gets 2 new command-line options, model_name and no_flush,
+
 0.5.0
 -----
 
