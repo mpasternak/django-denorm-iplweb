@@ -6,6 +6,9 @@ Changelog
 
 * optimized denorms.rebuildall, using bulk_create,
 * denorm_rebuild command gets 2 new command-line options, model_name and no_flush,
+* ability to disable auto_now_add and auto_now fields during denorm flush, using
+  settings -- DENORM_DISABLE_AUTOTIME_DURING_FLUSH and field names
+  DENORM_AUTOTIME_FIELD_NAMES.
 
 0.5.0
 -----

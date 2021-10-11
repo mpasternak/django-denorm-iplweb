@@ -22,8 +22,13 @@ class Command(BaseCommand):
             action="store_true",
             help="Used for testing. Causes event loop to run once. ",
         )
+        parser.add_argument(
+            "--disable-housekeeping",
+            action="store_true",
+            help="Disable housekeeping for this process",
+        )
 
-    def handle(self, run_once=False, **options):
+    def handle(self, run_once=False, disable_housekeeping=False, **options):
         crs = (
             connection.cursor()
         )  # get the cursor and establish the connection.connection
@@ -45,7 +50,7 @@ class Command(BaseCommand):
                     pg_con.poll()
                     while pg_con.notifies:
                         pg_con.notifies.pop()
-                    denorms.flush()
+                    denorms.flush(disable_housekeeping=disable_housekeeping)
             except KeyboardInterrupt:
                 sys.exit()
             if run_once:

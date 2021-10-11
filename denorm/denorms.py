@@ -6,7 +6,7 @@ import traceback
 from django.apps import apps
 from django.contrib import contenttypes
 from django.core.exceptions import FieldDoesNotExist
-from django.db import connection, connections, transaction
+from django.db import OperationalError, connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
 from django.db.models.manager import Manager
@@ -15,6 +15,8 @@ from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql.datastructures import Join
 from django.db.models.sql.query import JoinInfo, Query
 from django.db.models.sql.where import WhereNode
+
+from denorm.contextmanagers import suppress_autotime
 
 logger = logging.getLogger(__name__)
 
@@ -705,7 +707,7 @@ class CountDenorm(AggregateDenorm):
         return self.get_decrement_value(using)
 
 
-def rebuild_instances_of(model):
+def rebuild_instances_of(model, *args, **kwargs):
     # create DirtyInstance for all models
 
     from .models import DirtyInstance
@@ -714,7 +716,7 @@ def rebuild_instances_of(model):
     DirtyInstance.objects.bulk_create(
         [
             DirtyInstance(content_type_id=content_type.pk, object_id=pk)
-            for pk in model.objects.values_list("pk", flat=True)
+            for pk in model.objects.filter(*args, **kwargs).values_list("pk", flat=True)
         ]
     )
 
@@ -787,7 +789,7 @@ def build_triggerset(using=None):
 INTERACTIVE = False
 
 
-def flush(verbose=False, run_once=False):
+def flush(verbose=False, run_once=False, disable_housekeeping=False):
     """
     Updates all model instances marked as dirty by the DirtyInstance
     model.
@@ -800,7 +802,12 @@ def flush(verbose=False, run_once=False):
     # may cause an other instance to be marked dirty (dependency chains)
 
     # Get all dirty markers
+    from denorm.conf import settings
+
     from .models import DirtyInstance
+
+    disable_autotime_during_flush = settings.DENORM_DISABLE_AUTOTIME_DURING_FLUSH
+    autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
 
     cnt = 0
     while True:
@@ -865,7 +872,17 @@ def flush(verbose=False, run_once=False):
                 if update_fields:
                     kw = dict(update_fields=update_fields)
             try:
-                obj.save(**kw)
+                try:
+                    if disable_autotime_during_flush:
+                        with suppress_autotime(obj, autotime_field_names):
+                            obj.save(**kw)
+                    else:
+                        obj.save(**kw)
+                except OperationalError:
+                    # Possible deadlock. Saving traceback not possible at this point.
+                    # Let's bail-out and end this transaction.
+                    continue
+
                 dirty_instance.delete_this_and_similar()
 
             except Exception:
@@ -873,4 +890,5 @@ def flush(verbose=False, run_once=False):
                 dirty_instance.mark_as_failed(traceback.format_exc())
 
     # TODO: keep housekeeping to single thread, to reduce db load
-    DirtyInstance.objects.housekeeping()
+    if not disable_housekeeping:
+        DirtyInstance.objects.housekeeping()
