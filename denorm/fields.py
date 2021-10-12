@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-from django.db import models, connection
-from . import denorms
 from django.conf import settings
-import django.db.models
+from django.db import connection, models
+
+from . import denorms
 
 
 def denormalized(DBField, *args, **kwargs):
@@ -20,7 +20,7 @@ def denormalized(DBField, *args, **kwargs):
         Note that you have to use the field class and not an instance
         of it.
 
-    \*args, \*\*kwargs:
+    \\*args, \\*\\*kwargs:
         Those will be passed unaltered into the constructor of ``DBField``
         once it gets actually created.
     """
@@ -33,17 +33,24 @@ def denormalized(DBField, *args, **kwargs):
 
         def __init__(self, func=None, *args, **kwargs):
             self.func = func
-            self.skip = kwargs.pop('skip', None)
-            kwargs['editable'] = False
+            self.skip = kwargs.pop("skip", None)
+            self.only = kwargs.pop("only", None)
+            kwargs["editable"] = False
             DBField.__init__(self, *args, **kwargs)
 
         def contribute_to_class(self, cls, name, *args, **kwargs):
-            if hasattr(settings, 'DENORM_BULK_UNSAFE_TRIGGERS') and settings.DENORM_BULK_UNSAFE_TRIGGERS:
-                self.denorm = denorms.BaseCallbackDenorm(skip=self.skip)
+            if (
+                hasattr(settings, "DENORM_BULK_UNSAFE_TRIGGERS")
+                and settings.DENORM_BULK_UNSAFE_TRIGGERS
+            ):
+                self.denorm = denorms.BaseCallbackDenorm(skip=self.skip, only=self.only)
             else:
-                self.denorm = denorms.CallbackDenorm(skip=self.skip)
+                self.denorm = denorms.CallbackDenorm(skip=self.skip, only=self.only)
             self.denorm.func = self.func
-            self.denorm.depend = [dcls(*dargs, **dkwargs) for (dcls, dargs, dkwargs) in getattr(self.func, 'depend', [])]
+            self.denorm.depend = [
+                dcls(*dargs, **dkwargs)
+                for (dcls, dargs, dkwargs) in getattr(self.func, "depend", [])
+            ]
             self.denorm.model = cls
             self.denorm.fieldname = name
             self.field_args = (args, kwargs)
@@ -61,7 +68,7 @@ def denormalized(DBField, *args, **kwargs):
 
             if hasattr(self, "remote_field") and self.remote_field:  # Django>=1.10
                 related_field_model = self.remote_field.model
-            elif hasattr(self, 'related_field'):  # Django>1.5
+            elif hasattr(self, "related_field"):  # Django>1.5
                 related_field_model = self.related_field.model
             elif hasattr(self, "related"):
                 try:
@@ -79,34 +86,26 @@ def denormalized(DBField, *args, **kwargs):
                 setattr(model_instance, self.attname, value)
                 return value
 
-        def south_field_triple(self):
-            """
-            Because this field will be defined as a decorator, give
-            South hints on how to recreate it for database use.
-            """
-            from south.modelsinspector import introspector
-            field_class = DBField.__module__ + "." + DBField.__name__
-            args, kwargs = introspector(self)
-            return (field_class, args, kwargs)
-
         def deconstruct(self):
             name, path, args, kwargs = super(DenormDBField, self).deconstruct()
-            super_name, super_path, super_args, super_kwargs = DBField(*args, **kwargs).deconstruct()
+            super_name, super_path, super_args, super_kwargs = DBField(
+                *args, **kwargs
+            ).deconstruct()
             return name, super_path, args, kwargs
 
     def deco(func):
         dbfield = DenormDBField(func, *args, **kwargs)
         return dbfield
+
     return deco
 
 
 class AggregateField(models.PositiveIntegerField):
-
     def get_denorm(self, *args, **kwargs):
         """
         Returns denorm instance
         """
-        raise NotImplemented('You need to override this method')
+        raise NotImplementedError("You need to override this method")
 
     def __init__(self, manager_name=None, **kwargs):
         """
@@ -127,18 +126,20 @@ class AggregateField(models.PositiveIntegerField):
         Any additional arguments are passed on to the contructor of
         PositiveIntegerField.
         """
-        skip = kwargs.pop('skip', None)
-        qs_filter = kwargs.pop('filter', {})
+        skip = kwargs.pop("skip", None)
+        qs_filter = kwargs.pop("filter", {})
         if qs_filter and connection.vendor == "sqlite":
-            raise NotImplementedError('filters for aggregate fields are currently not supported for sqlite')
-        qs_exclude = kwargs.pop('exclude', {})
+            raise NotImplementedError(
+                "filters for aggregate fields are currently not supported for sqlite"
+            )
+        qs_exclude = kwargs.pop("exclude", {})
         self.denorm = self.get_denorm(skip)
         self.denorm.manager_name = manager_name
         self.denorm.filter = qs_filter
         self.denorm.exclude = qs_exclude
         self.kwargs = kwargs
-        kwargs['default'] = 0
-        kwargs['editable'] = False
+        kwargs["default"] = 0
+        kwargs["editable"] = False
         super(AggregateField, self).__init__(**kwargs)
 
     def contribute_to_class(self, cls, name, *args, **kwargs):
@@ -146,15 +147,6 @@ class AggregateField(models.PositiveIntegerField):
         self.denorm.fieldname = name
         models.signals.class_prepared.connect(self.denorm.setup)
         super(AggregateField, self).contribute_to_class(cls, name, *args, **kwargs)
-
-    def south_field_triple(self):
-        return (
-            '.'.join(('django', 'db', 'models', models.PositiveIntegerField.__name__)),
-            [],
-            {
-                'default': '0',
-            },
-        )
 
     def pre_save(self, model_instance, add):
         """
@@ -168,10 +160,9 @@ class AggregateField(models.PositiveIntegerField):
             value = 0
         else:
             # if we're updating, get the most recent value from the DB
-            value = self.denorm.model.objects.filter(
-                pk=model_instance.pk,
-            ).values_list(
-                self.attname, flat=True,
+            value = self.denorm.model.objects.filter(pk=model_instance.pk,).values_list(
+                self.attname,
+                flat=True,
             )[0]
 
         setattr(model_instance, self.attname, value)
@@ -179,7 +170,7 @@ class AggregateField(models.PositiveIntegerField):
 
     def deconstruct(self):
         name, path, args, kwargs = super(AggregateField, self).deconstruct()
-        del kwargs['editable']
+        del kwargs["editable"]
         args = [self.denorm.manager_name] + args
         return name, path, args, kwargs
 
@@ -210,7 +201,7 @@ class CountField(AggregateField):
         PositiveIntegerField.
         """
 
-        kwargs['editable'] = False
+        kwargs["editable"] = False
         super(CountField, self).__init__(manager_name, **kwargs)
 
     def get_denorm(self, skip):
@@ -228,18 +219,11 @@ class SumField(AggregateField):
 
     def __init__(self, manager_name=None, field=None, **kwargs):
         self.field = field
-        kwargs['editable'] = False
+        kwargs["editable"] = False
         super(SumField, self).__init__(manager_name, **kwargs)
 
     def get_denorm(self, skip):
         return denorms.SumDenorm(skip, self.field)
-
-
-class CopyField(AggregateField):
-    """
-    Field, which makes two field identical. Any change in related field will change this field
-    """
-    # TODO: JFDI
 
 
 class CacheKeyField(models.BigIntegerField):
@@ -257,8 +241,8 @@ class CacheKeyField(models.BigIntegerField):
         BigIntegerField.
         """
         self.dependencies = []
-        kwargs['default'] = 0
-        kwargs['editable'] = False
+        kwargs["default"] = 0
+        kwargs["editable"] = False
         self.kwargs = kwargs
         super(CacheKeyField, self).__init__(**kwargs)
 
@@ -268,6 +252,7 @@ class CacheKeyField(models.BigIntegerField):
         Accepts the same arguments like the *denorm.depend_on_related* decorator
         """
         from .dependencies import CacheKeyDependOnRelated
+
         self.dependencies.append(CacheKeyDependOnRelated(*args, **kwargs))
 
     def contribute_to_class(self, cls, name, *args, **kwargs):
@@ -280,25 +265,9 @@ class CacheKeyField(models.BigIntegerField):
         super(CacheKeyField, self).contribute_to_class(cls, name, *args, **kwargs)
 
     def pre_save(self, model_instance, add):
-        if add:
-            value = self.denorm.func(model_instance)
-        else:
-            value = self.denorm.model.objects.filter(
-                pk=model_instance.pk,
-            ).values_list(
-                self.attname, flat=True,
-            )[0]
+        value = self.denorm.func(model_instance)
         setattr(model_instance, self.attname, value)
         return value
-
-    def south_field_triple(self):
-        return (
-            '.'.join(('django', 'db', 'models', models.BigIntegerField.__name__)),
-            [],
-            {
-                'default': '0',
-            },
-        )
 
 
 class CacheWrapper(object):
@@ -306,7 +275,7 @@ class CacheWrapper(object):
         self.field = field
 
     def __set__(self, obj, value):
-        key = 'CachedField_%s' % value
+        key = "CachedField_%s" % value
         cached = self.field.cache.get(key)
         if not cached:
             cached = self.field.func(obj)
@@ -332,4 +301,5 @@ def cached(cache, *args, **kwargs):
     def deco(func):
         dbfield = CachedField(func, cache, *args, **kwargs)
         return dbfield
+
     return deco

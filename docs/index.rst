@@ -1,8 +1,8 @@
-=========================================
-Welcome to django-denorm's documentation!
-=========================================
+================================================
+Welcome to django-denorm-iplweb's documentation!
+================================================
 
-django-denorm provides a declarative way of denormalizing_ models in Django_ based applications while
+django-denorm-iplweb provides a declarative way of denormalizing_ models in Django_ based applications while
 maintaining data consistency.
 
 .. _denormalizing: http://en.wikipedia.org/wiki/Denormalization
@@ -16,4 +16,4 @@ Contents
 
    tutorial
    reference
-
+   history

@@ -1,23 +1,26 @@
 from django.db import transaction
-from denorm.db import base
+from django.db.backends.utils import truncate_name
+
+from denorm.db import base, const
 
 
 class RandomBigInt(base.RandomBigInt):
     def sql(self):
-        return '(9223372036854775806::INT8 * ((RANDOM()-0.5)*2.0) )::INT8'
+        return "(9223372036854775806::INT8 * ((RANDOM()-0.5)*2.0) )::INT8"
 
 
 class TriggerNestedSelect(base.TriggerNestedSelect):
-
     def sql(self):
         columns = self.columns
         table = self.table
         where = ", ".join(["%s = %s" % (k, v) for k, v in self.kwargs.items()])
-        return 'SELECT DISTINCT %(columns)s FROM %(table)s WHERE %(where)s' % locals(), tuple()
+        return (
+            "SELECT DISTINCT %(columns)s FROM %(table)s WHERE %(where)s" % locals(),
+            tuple(),
+        )
 
 
 class TriggerActionInsert(base.TriggerActionInsert):
-
     def sql(self):
         table = self.model._meta.db_table
         columns = "(" + ", ".join(self.columns) + ")"
@@ -29,53 +32,57 @@ class TriggerActionInsert(base.TriggerActionInsert):
         else:
             values = "VALUES (" + ", ".join(self.values) + ")"
 
+        denorm_queue_name = const.DENORM_QUEUE_NAME
         sql = (
-            'BEGIN\n'
-            '    INSERT INTO %(table)s %(columns)s %(values)s;\n'
-            'EXCEPTION WHEN unique_violation THEN\n'
-            '    -- do nothing\n'
-            'END'
+            "BEGIN\n"
+            "    INSERT INTO %(table)s %(columns)s %(values)s;\n"
+            "EXCEPTION WHEN unique_violation THEN\n"
+            "    -- do nothing\n"
+            "END"
         ) % locals()
         return sql, params
 
 
 class TriggerActionUpdate(base.TriggerActionUpdate):
-
     def sql(self):
         table = self.model._meta.db_table
         params = []
-        updates = ", ".join(["%s = %s" % (k, v) for k, v in zip(self.columns, self.values)])
+        updates = ", ".join(
+            ["%s = %s" % (k, v) for k, v in zip(self.columns, self.values)]
+        )
         if isinstance(self.where, tuple):
             where, where_params = self.where
         else:
             where, where_params = self.where, []
         params.extend(where_params)
-        return 'UPDATE %(table)s SET %(updates)s WHERE %(where)s' % locals(), params
+        return "UPDATE %(table)s SET %(updates)s WHERE %(where)s" % locals(), params
 
 
 class Trigger(base.Trigger):
     def name(self):
         name = base.Trigger.name(self)
         if self.content_type_field:
-            name += "_%s" % self.content_type
+            name += f"_{self.content_type}"
+        if self.func:
+            name += f'_{self.func.__qualname__.lower().replace(".", "_")}'
         return name
 
     def sql(self):
         qn = self.connection.ops.quote_name
 
-        name = self.name()
+        name = truncate_name(self.name(), self.connection.ops.max_name_length() - 5)
         params = []
         action_list = []
         actions_added = set()
         for a in self.actions:
             sql, action_params = a.sql()
             if sql:
-                if not sql.endswith(';'):
-                    sql += ';'
+                if not sql.endswith(";"):
+                    sql += ";"
                 action_params = tuple(action_params)
                 if (sql, action_params) not in actions_added:
                     actions_added.add((sql, action_params))
-                    action_list.extend(sql.split('\n'))
+                    action_list.extend(sql.split("\n"))
                     params.extend(action_params)
         table = self.db_table
         time = self.time.upper()
@@ -92,16 +99,24 @@ class Trigger(base.Trigger):
                     # If Django didn't know what this field type should be
                     # then compare it as text - Fixes a problem of trying to
                     # compare PostGIS geometry fields.
-                    conditions.append("(OLD.%(f)s::%(t)s IS DISTINCT FROM NEW.%(f)s::%(t)s)" % {'f': field, 't': 'text'})
+                    conditions.append(
+                        "(OLD.%(f)s::%(t)s IS DISTINCT FROM NEW.%(f)s::%(t)s)"
+                        % {"f": field, "t": "text"}
+                    )
                 else:
-                    conditions.append("(OLD.%(f)s IS DISTINCT FROM NEW.%(f)s)" % {'f': field})
+                    conditions.append(
+                        "(OLD.%(f)s IS DISTINCT FROM NEW.%(f)s)" % {"f": field}
+                    )
 
             conditions = ["(%s)" % " OR ".join(conditions)]
 
         if ct_field:
             ct_field = qn(ct_field)
             if event == "UPDATE":
-                conditions.append("(OLD.%(ctf)s = %(ct)s) OR (NEW.%(ctf)s = %(ct)s)" % {'ctf': ct_field, 'ct': content_type})
+                conditions.append(
+                    "(OLD.%(ctf)s = %(ct)s) OR (NEW.%(ctf)s = %(ct)s)"
+                    % {"ctf": ct_field, "ct": content_type}
+                )
             elif event == "INSERT":
                 conditions.append("(NEW.%s = %s)" % (ct_field, content_type))
             elif event == "DELETE":
@@ -110,24 +125,42 @@ class Trigger(base.Trigger):
         if conditions:
             cond = " AND ".join(conditions)
             actions = "\n            ".join(action_list)
-            actions = """IF %(cond)s THEN
+            actions = (
+                """IF %(cond)s THEN
             %(actions)s
-        END IF;""" % locals()
+        END IF;"""
+                % locals()
+            )
         else:
             actions = "\n        ".join(action_list)
 
-        sql = """
-CREATE OR REPLACE FUNCTION func_%(name)s()
+        comment = ""
+        spaces = "        "
+        if self.func:
+            comment = (
+                f"-- This trigger was created because of @depend_on_related of {self.func.__qualname__}\n"
+                f"{spaces}-- It happens {self.time.upper()} {self.event.upper()} on {self.db_table}\n"
+                f"{spaces}-- This function was autogenerated by code found in {self.__class__}\n\n{spaces}"
+            )
+
+        sql = (
+            """
+CREATE OR REPLACE FUNCTION f_%(name)s()
     RETURNS TRIGGER AS $$
     BEGIN
-        %(actions)s
+        %(comment)s%(actions)s
         RETURN NULL;
     END;
 $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS %(name)s ON %(table)s;
+
 CREATE TRIGGER %(name)s
     %(time)s %(event)s ON %(table)s
-    FOR EACH ROW EXECUTE PROCEDURE func_%(name)s();
-""" % locals()
+    FOR EACH ROW EXECUTE PROCEDURE f_%(name)s();
+"""
+            % locals()
+        )
         return sql, params
 
 
@@ -135,9 +168,15 @@ class TriggerSet(base.TriggerSet):
     def drop_atomic(self):
         qn = self.connection.ops.quote_name
         cursor = self.cursor()
-        cursor.execute("SELECT pg_class.relname, pg_trigger.tgname FROM pg_trigger LEFT JOIN pg_class ON (pg_trigger.tgrelid = pg_class.oid) WHERE pg_trigger.tgname LIKE 'denorm_%%';")
+        cursor.execute(
+            "SELECT pg_class.relname, pg_trigger.tgname FROM pg_trigger "
+            "LEFT JOIN pg_class ON (pg_trigger.tgrelid = pg_class.oid) "
+            "WHERE pg_trigger.tgname LIKE 'denorm_%%';"
+        )
         for table_name, trigger_name in cursor.fetchall():
-            cursor.execute('DROP TRIGGER %s ON %s;' % (qn(trigger_name), qn(table_name)))
+            cursor.execute(
+                "DROP TRIGGER %s ON %s;" % (qn(trigger_name), qn(table_name))
+            )
 
     def drop(self):
         try:
@@ -149,9 +188,11 @@ class TriggerSet(base.TriggerSet):
 
     def install_atomic(self):
         cursor = self.cursor()
-        cursor.execute("SELECT lanname FROM pg_catalog.pg_language WHERE lanname ='plpgsql'")
+        cursor.execute(
+            "SELECT lanname FROM pg_catalog.pg_language WHERE lanname ='plpgsql'"
+        )
         if not cursor.fetchall():
-            cursor.execute('CREATE LANGUAGE plpgsql')
+            cursor.execute("CREATE LANGUAGE plpgsql")
         for name, trigger in self.triggers.items():
             sql, args = trigger.sql()
             cursor.execute(sql, args)

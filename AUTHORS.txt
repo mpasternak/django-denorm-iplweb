@@ -1,0 +1,7 @@
+Current maintainer of django-denorm-iplweb:
+* Michał Pasternak <michal.dtz@gmail.com>
+
+Original setup.py authors of django-denorm -- as forked on 29.09.2021:
+* Christian Schilling <initcrash@gmail.com>
+* James Turnbull <james@incuna.com>
+* Petr Dlouhy <petr.dlouhy@email.cz>

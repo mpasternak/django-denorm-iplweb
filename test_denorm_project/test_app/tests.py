@@ -1,20 +1,26 @@
-from django.db import connection
-from django.test import TestCase, TransactionTestCase
-from django.contrib.contenttypes.models import ContentType
-from django.core.management import call_command
+from io import StringIO
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-User = get_user_model()
+from django.contrib.contenttypes.models import ContentType
+from django.core.management import call_command
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
+from test_app import models
 
 import denorm
 from denorm import denorms
-from test_app import models
-import django
-from decimal import Decimal
+
+User = get_user_model()
+
 
 # Use all but denorms in FailingTriggers models by default
 failingdenorms = denorms.get_alldenorms()
-denorms.alldenorms = [d for d in failingdenorms if d.model not in (models.FailingTriggersModelA, models.FailingTriggersModelB)]
+denorms.alldenorms = [
+    d
+    for d in failingdenorms
+    if d.model not in (models.FailingTriggersModelA, models.FailingTriggersModelB)
+]
 
 
 class TestTriggers(TestCase):
@@ -22,8 +28,7 @@ class TestTriggers(TestCase):
         denorms.drop_triggers()
 
     def test_triggers(self):
-        """Test potentially failing denorms.
-        """
+        """Test potentially failing denorms."""
         # save and restore alldenorms
         # test will fail if it's raising an exception
         alldenorms = denorms.get_alldenorms()
@@ -44,24 +49,24 @@ class TestCached(TestCase):
         models.CachedModelB.objects.all().delete()
 
     def test_depends_related(self):
-        models.CachedModelB.objects.create(data='Hello')
+        models.CachedModelB.objects.create(data="Hello")
         b = models.CachedModelB.objects.all()[0]
-        self.assertEqual('Hello', b.data)
+        self.assertEqual("Hello", b.data)
 
         models.CachedModelA.objects.create(b=b)
         a = models.CachedModelA.objects.all()[0]
 
-        self.assertEqual("HELLO", a.cached_data['upper'])
-        self.assertEqual("hello", a.cached_data['lower'])
+        self.assertEqual("HELLO", a.cached_data["upper"])
+        self.assertEqual("hello", a.cached_data["lower"])
 
-        b.data = 'World'
-        self.assertEqual("HELLO", a.cached_data['upper'])
-        self.assertEqual("hello", a.cached_data['lower'])
+        b.data = "World"
+        self.assertEqual("HELLO", a.cached_data["upper"])
+        self.assertEqual("hello", a.cached_data["lower"])
 
         b.save()
         a = models.CachedModelA.objects.all()[0]
-        self.assertEqual("WORLD", a.cached_data['upper'])
-        self.assertEqual("world", a.cached_data['lower'])
+        self.assertEqual("WORLD", a.cached_data["upper"])
+        self.assertEqual("world", a.cached_data["lower"])
 
 
 class TestAbstract(TestCase):
@@ -70,7 +75,7 @@ class TestAbstract(TestCase):
         denorms.install_triggers()
 
     def test_abstract(self):
-        d1 = models.RealDenormModel.objects.create(text='onion')
+        d1 = models.RealDenormModel.objects.create(text="onion")
         self.assertEqual("Ham and onion", d1.ham)
         self.assertEqual("Eggs and onion", d1.eggs)
 
@@ -85,7 +90,7 @@ class TestSkip(TransactionTestCase):
         denorm.models.DirtyInstance.objects.all().delete()
         denorms.install_triggers()
 
-        post = models.SkipPost(text='Here be ponies.')
+        post = models.SkipPost(text="Here be ponies.")
         post.save()
 
         self.post = post
@@ -94,7 +99,7 @@ class TestSkip(TransactionTestCase):
     # Unsure on how to test this behaviour. It results in an endless loop:
     # update -> trigger -> update -> trigger -> ...
     #
-    #def test_without_skip(self):
+    # def test_without_skip(self):
     #    # This results in an infinate loop on SQLite.
     #    comment = SkipCommentWithoutSkip(post=self.post, text='Oh really?')
     #    comment.save()
@@ -104,14 +109,23 @@ class TestSkip(TransactionTestCase):
     # TODO: Check if an infinate loop happens and stop it.
     def test_with_skip(self):
         # This should not result in an endless loop.
-        comment = models.SkipCommentWithSkip(post=self.post, text='Oh really?')
+        comment = models.SkipCommentWithSkip(post=self.post, text="Oh really?")
+        comment.save()
+
+        denorm.flush()
+
+    def test_with_only(self):
+        # This should not result in an endless loop.
+        comment = models.SkipCommentWithOnly(post=self.post, text="Oh really?")
         comment.save()
 
         denorm.flush()
 
     def test_meta_skip(self):
         """Test a model with the attribute listed under denorm_always_skip."""
-        comment = models.SkipCommentWithAttributeSkip(post=self.post, text='Yup, and they have wings!')
+        comment = models.SkipCommentWithAttributeSkip(
+            post=self.post, text="Yup, and they have wings!"
+        )
         comment.save()
 
         denorm.flush()
@@ -129,7 +143,7 @@ class TestDenormalisation(TransactionTestCase):
 
         self.testuser = User.objects.create_user("testuser", "testuser", "testuser")
         self.testuser.is_staff = True
-        ctype = ContentType.objects.get_for_model(models.Member)
+        ContentType.objects.get_for_model(models.Member)
         self.testuser.save()
 
     def tearDown(self):
@@ -141,7 +155,7 @@ class TestDenormalisation(TransactionTestCase):
 
     def test_depends_related(self):
         """
-        Test the DependsOnRelated stuff.
+        test_depends_related -- Test the DependsOnRelated stuff.
         """
         # Make a forum, check it's got no posts
         f1 = models.Forum.objects.create(title="forumone")
@@ -153,7 +167,6 @@ class TestDenormalisation(TransactionTestCase):
         p1 = models.Post.objects.create(forum=f1)
         # Has the post count updated?
         self.assertEqual(models.Forum.objects.get(id=f1.id).post_count, 1)
-
         denorm.flush()
 
         # Check its title, in p1 and the DB
@@ -183,8 +196,8 @@ class TestDenormalisation(TransactionTestCase):
 
         # Make an orphaned post, see what its title is.
         # Doesn't work yet - no support for null FKs
-        #p4 = Post.objects.create(forum=None)
-        #self.assertEqual(p4.forum_title, None)
+        # p4 = Post.objects.create(forum=None)
+        # self.assertEqual(p4.forum_title, None)
 
     def test_dependency_chains(self):
         # create a forum, a member and a post
@@ -210,11 +223,11 @@ class TestDenormalisation(TransactionTestCase):
         f3 = models.Forum.objects.create(title="forumthree", parent_forum=f2)
         denorm.flush()
 
-        self.assertEqual(f1.path, '/forumone/')
-        self.assertEqual(f2.path, '/forumone/forumtwo/')
-        self.assertEqual(f3.path, '/forumone/forumtwo/forumthree/')
+        self.assertEqual(f1.path, "/forumone/")
+        self.assertEqual(f2.path, "/forumone/forumtwo/")
+        self.assertEqual(f3.path, "/forumone/forumtwo/forumthree/")
 
-        f1.title = 'someothertitle'
+        f1.title = "someothertitle"
         f1.save()
         denorm.flush()
 
@@ -222,9 +235,9 @@ class TestDenormalisation(TransactionTestCase):
         f2 = models.Forum.objects.get(id=f2.id)
         f3 = models.Forum.objects.get(id=f3.id)
 
-        self.assertEqual(f1.path, '/someothertitle/')
-        self.assertEqual(f2.path, '/someothertitle/forumtwo/')
-        self.assertEqual(f3.path, '/someothertitle/forumtwo/forumthree/')
+        self.assertEqual(f1.path, "/someothertitle/")
+        self.assertEqual(f2.path, "/someothertitle/forumtwo/")
+        self.assertEqual(f3.path, "/someothertitle/forumtwo/forumthree/")
 
     def test_reverse_fk_null(self):
         f1 = models.Forum.objects.create(title="forumone")
@@ -235,12 +248,13 @@ class TestDenormalisation(TransactionTestCase):
 
     def test_bulk_update(self):
         """
-        Test the DependsOnRelated stuff.
+        test_bulk_update -- Test the DependsOnRelated stuff.
         """
         f1 = models.Forum.objects.create(title="forumone")
         f2 = models.Forum.objects.create(title="forumtwo")
         p1 = models.Post.objects.create(forum=f1)
         p2 = models.Post.objects.create(forum=f2)
+        # denorms.INTERACTIVE = True
         denorm.flush()
 
         self.assertEqual(models.Post.objects.get(id=p1.id).forum_title, "forumone")
@@ -273,7 +287,9 @@ class TestDenormalisation(TransactionTestCase):
     def test_self_backward_relation(self):
 
         f1 = models.Forum.objects.create(title="forumone")
-        p1 = models.Post.objects.create(forum=f1, )
+        p1 = models.Post.objects.create(
+            forum=f1,
+        )
         p2 = models.Post.objects.create(forum=f1, response_to=p1)
         p3 = models.Post.objects.create(forum=f1, response_to=p1)
         p4 = models.Post.objects.create(forum=f1, response_to=p2)
@@ -293,24 +309,38 @@ class TestDenormalisation(TransactionTestCase):
         m1.bookmarks.add(p1)
         denorm.flush()
 
-        self.assertTrue('post1' in models.Member.objects.get(id=m1.id).bookmark_titles)
+        self.assertTrue("post1" in models.Member.objects.get(id=m1.id).bookmark_titles)
         p1.title = "othertitle"
         p1.save()
         denorm.flush()
-        self.assertTrue('post1' not in models.Member.objects.get(id=m1.id).bookmark_titles)
-        self.assertTrue('othertitle' in models.Member.objects.get(id=m1.id).bookmark_titles)
+        self.assertTrue(
+            "post1" not in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
+        self.assertTrue(
+            "othertitle" in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
 
         p2 = models.Post.objects.create(forum=f1, title="thirdtitle")
         m1.bookmarks.add(p2)
         denorm.flush()
-        self.assertTrue('post1' not in models.Member.objects.get(id=m1.id).bookmark_titles)
-        self.assertTrue('othertitle' in models.Member.objects.get(id=m1.id).bookmark_titles)
-        self.assertTrue('thirdtitle' in models.Member.objects.get(id=m1.id).bookmark_titles)
+        self.assertTrue(
+            "post1" not in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
+        self.assertTrue(
+            "othertitle" in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
+        self.assertTrue(
+            "thirdtitle" in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
 
         m1.bookmarks.remove(p1)
         denorm.flush()
-        self.assertTrue('othertitle' not in models.Member.objects.get(id=m1.id).bookmark_titles)
-        self.assertTrue('thirdtitle' in models.Member.objects.get(id=m1.id).bookmark_titles)
+        self.assertTrue(
+            "othertitle" not in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
+        self.assertTrue(
+            "thirdtitle" in models.Member.objects.get(id=m1.id).bookmark_titles
+        )
 
     def test_middleware(self):
         # FIXME, this test currently does not work with a transactional
@@ -324,10 +354,13 @@ class TestDenormalisation(TransactionTestCase):
         self.assertEqual(models.Post.objects.get(id=p1.id).author_name, "last1")
 
         self.client.login(username="testuser", password="testuser")
-        self.client.post("/admin/denorm_testapp/member/%s/" % (m1.pk), {
-            'name': 'last2',
-            'first_name': 'first2',
-        })
+        self.client.post(
+            "/admin/denorm_testapp/member/%s/" % (m1.pk),
+            {
+                "name": "last2",
+                "first_name": "first2",
+            },
+        )
 
         self.assertEqual(models.Post.objects.get(id=p1.id).author_name, "last2")
 
@@ -391,7 +424,7 @@ class TestDenormalisation(TransactionTestCase):
 
         # test denorm function returning object, not PK
         models.Attachment.forum_as_object = True
-        a3 = models.Attachment.objects.create(post=p1)
+        models.Attachment.objects.create(post=p1)
         models.Attachment.forum_as_object = False
 
     def test_m2m(self):
@@ -437,7 +470,8 @@ class TestDenormalisation(TransactionTestCase):
         models.CallCounter.objects.create()
         denorm.denorms.flush()
         c = models.CallCounter.objects.get()
-        self.assertEqual(c.called_count, 2)  # TODO: we should be able to create object with hitting the denorm function just once
+        # TODO: we should be able to create object with hitting the denorm function just once
+        self.assertEqual(c.called_count, 2)
         denorm.denorms.rebuildall(verbose=True)
         c = models.CallCounter.objects.get()
         self.assertEqual(c.called_count, 3)
@@ -449,7 +483,7 @@ class TestDenormalisation(TransactionTestCase):
         f1 = models.Forum.objects.create(title="forumone")
         m1 = models.Member.objects.create(name="memberone")
         p1 = models.Post.objects.create(forum=f1, author=m1)
-        a1 = models.Attachment.objects.create(post=p1)
+        models.Attachment.objects.create(post=p1)
 
         denorm.denorms.rebuildall()
 
@@ -461,37 +495,37 @@ class TestDenormalisation(TransactionTestCase):
         # We have to update the Attachment.forum field first to trigger this bug. Simply doing rebuildall() will
         # trigger an a1.save() at an some earlier point during the update. By the time we get to updating the value of
         # forum field the value is already correct and no update is done bypassing the broken code.
-        denorm.denorms.rebuildall(model_name='Attachment', field_name='forum')
+        denorm.denorms.rebuildall(model_name="Attachment", field_name="forum")
 
     def test_denorm_subclass(self):
         f1 = models.Forum.objects.create(title="forumone")
         m1 = models.Member.objects.create(name="memberone")
         p1 = models.Post.objects.create(forum=f1, author=m1)
 
-        self.assertEqual(f1.tags_string, '')
-        self.assertEqual(p1.tags_string, '')
+        self.assertEqual(f1.tags_string, "")
+        self.assertEqual(p1.tags_string, "")
 
-        models.Tag.objects.create(name='tagone', content_object=f1)
-        models.Tag.objects.create(name='tagtwo', content_object=f1)
-
-        denorm.denorms.flush()
-        f1 = models.Forum.objects.get(id=f1.id)
-        m1 = models.Member.objects.get(id=m1.id)
-        p1 = models.Post.objects.get(id=p1.id)
-
-        self.assertEqual(f1.tags_string, 'tagone, tagtwo')
-        self.assertEqual(p1.tags_string, '')
-
-        models.Tag.objects.create(name='tagthree', content_object=p1)
-        t4 = models.Tag.objects.create(name='tagfour', content_object=p1)
+        models.Tag.objects.create(name="tagone", content_object=f1)
+        models.Tag.objects.create(name="tagtwo", content_object=f1)
 
         denorm.denorms.flush()
         f1 = models.Forum.objects.get(id=f1.id)
         m1 = models.Member.objects.get(id=m1.id)
         p1 = models.Post.objects.get(id=p1.id)
 
-        self.assertEqual(f1.tags_string, 'tagone, tagtwo')
-        self.assertEqual(p1.tags_string, 'tagfour, tagthree')
+        self.assertEqual(f1.tags_string, "tagone, tagtwo")
+        self.assertEqual(p1.tags_string, "")
+
+        models.Tag.objects.create(name="tagthree", content_object=p1)
+        t4 = models.Tag.objects.create(name="tagfour", content_object=p1)
+
+        denorm.denorms.flush()
+        f1 = models.Forum.objects.get(id=f1.id)
+        m1 = models.Member.objects.get(id=m1.id)
+        p1 = models.Post.objects.get(id=p1.id)
+
+        self.assertEqual(f1.tags_string, "tagone, tagtwo")
+        self.assertEqual(p1.tags_string, "tagfour, tagthree")
 
         t4.content_object = f1
         t4.save()
@@ -501,27 +535,27 @@ class TestDenormalisation(TransactionTestCase):
         m1 = models.Member.objects.get(id=m1.id)
         p1 = models.Post.objects.get(id=p1.id)
 
-        self.assertEqual(f1.tags_string, 'tagfour, tagone, tagtwo')
-        self.assertEqual(p1.tags_string, 'tagthree')
+        self.assertEqual(f1.tags_string, "tagfour, tagone, tagtwo")
+        self.assertEqual(p1.tags_string, "tagthree")
 
     def test_denorm_delete(self):
-        """ This tests bug #69 """
+        """This tests bug #69"""
         team = models.Team.objects.create()
 
-        self.assertEqual(team.user_string, '')
+        self.assertEqual(team.user_string, "")
 
-        models.Competitor.objects.create(name='tagone', team=team)
-        models.Competitor.objects.create(name='tagtwo', team=team)
-
-        denorm.denorms.flush()
-        team = models.Team.objects.get(id=team.id)
-        self.assertEqual(team.user_string, 'tagone, tagtwo')
-
-        models.Competitor.objects.get(name='tagtwo').delete()
+        models.Competitor.objects.create(name="tagone", team=team)
+        models.Competitor.objects.create(name="tagtwo", team=team)
 
         denorm.denorms.flush()
         team = models.Team.objects.get(id=team.id)
-        self.assertEqual(team.user_string, 'tagone')
+        self.assertEqual(team.user_string, "tagone, tagtwo")
+
+        models.Competitor.objects.get(name="tagtwo").delete()
+
+        denorm.denorms.flush()
+        team = models.Team.objects.get(id=team.id)
+        self.assertEqual(team.user_string, "tagone")
 
     def test_cache_key_field_backward(self):
         f1 = models.Forum.objects.create(title="forumone")
@@ -550,7 +584,7 @@ class TestDenormalisation(TransactionTestCase):
 
     def test_cache_key_field_forward(self):
         f1 = models.Forum.objects.create(title="forumone")
-        p1 = models.Post.objects.create(title='initial_title', forum=f1)
+        p1 = models.Post.objects.create(title="initial_title", forum=f1)
         a1 = models.Attachment.objects.create(post=p1)
         a2 = models.Attachment.objects.create(post=p1)
 
@@ -560,7 +594,7 @@ class TestDenormalisation(TransactionTestCase):
 
         ck1 = a1.cachekey
         ck2 = a2.cachekey
-        p1.title = 'new_title'
+        p1.title = "new_title"
         p1.save()
 
         a1 = models.Attachment.objects.get(id=a1.id)
@@ -575,7 +609,7 @@ class TestDenormalisation(TransactionTestCase):
     def test_cache_key_field_m2m(self):
         f1 = models.Forum.objects.create(title="forumone")
         m1 = models.Member.objects.create(name="memberone")
-        p1 = models.Post.objects.create(title='initial_title', forum=f1)
+        p1 = models.Post.objects.create(title="initial_title", forum=f1)
 
         m1 = models.Member.objects.get(id=m1.id)
         ck1 = m1.cachekey
@@ -588,7 +622,7 @@ class TestDenormalisation(TransactionTestCase):
         ck1 = m1.cachekey
 
         p1 = models.Post.objects.get(id=p1.id)
-        p1.title = 'new_title'
+        p1.title = "new_title"
         p1.save()
 
         m1 = models.Member.objects.get(id=m1.id)
@@ -596,10 +630,12 @@ class TestDenormalisation(TransactionTestCase):
 
 
 if connection.vendor != "sqlite":
+
     class TestFilterCount(TestCase):
         """
         Tests for the filtered count feature.
         """
+
         def setUp(self):
             denorms.drop_triggers()
             denorms.install_triggers()
@@ -607,35 +643,35 @@ if connection.vendor != "sqlite":
         def test_filter_count(self):
             master = models.FilterCountModel.objects.create()
             self.assertEqual(master.active_item_count, 0)
-            master.items.create(active=True, text='text')
-            master.items.create(active=True, text='')
+            master.items.create(active=True, text="text")
+            master.items.create(active=True, text="")
             master = models.FilterCountModel.objects.get(id=master.id)
-            self.assertEqual(master.active_item_count, 1, 'created active item')
+            self.assertEqual(master.active_item_count, 1, "created active item")
             master.items.create(active=False)
             master = models.FilterCountModel.objects.get(id=master.id)
-            self.assertEqual(master.active_item_count, 1, 'created inactive item')
-            master.items.create(active=True, text='true')
+            self.assertEqual(master.active_item_count, 1, "created inactive item")
+            master.items.create(active=True, text="true")
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 2)
             master.items.filter(active=False).delete()
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 2)
-            master.items.filter(active=True, text='true')[0].delete()
+            master.items.filter(active=True, text="true")[0].delete()
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 1)
-            item = master.items.filter(active=True, text='text')[0]
+            item = master.items.filter(active=True, text="text")[0]
             item.active = False
             item.save()
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 0)
-            item = master.items.filter(active=False, text='text')[0]
+            item = master.items.filter(active=False, text="text")[0]
             item.active = True
-            item.text = ''
+            item.text = ""
             item.save()
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 0)
-            item = master.items.filter(active=True, text='')[0]
-            item.text = '123'
+            item = master.items.filter(active=True, text="")[0]
+            item.text = "123"
             item.save()
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 1)
@@ -644,6 +680,7 @@ if connection.vendor != "sqlite":
         """
         Tests for the filtered count feature.
         """
+
         def setUp(self):
             denorms.drop_triggers()
             denorms.install_triggers()
@@ -651,13 +688,13 @@ if connection.vendor != "sqlite":
         def test_filter_count(self):
             master = models.FilterCountModel.objects.create()
             self.assertEqual(master.active_item_count, 0)
-            master.items.create(active=True, text='true')
+            master.items.create(active=True, text="true")
             master = models.FilterCountModel.objects.get(id=master.id)
-            self.assertEqual(master.active_item_count, 1, 'created active item')
-            master.items.create(active=False, text='true')
+            self.assertEqual(master.active_item_count, 1, "created active item")
+            master.items.create(active=False, text="true")
             master = models.FilterCountModel.objects.get(id=master.id)
-            self.assertEqual(master.active_item_count, 1, 'created inactive item')
-            master.items.create(active=True, text='true')
+            self.assertEqual(master.active_item_count, 1, "created inactive item")
+            master.items.create(active=True, text="true")
             master = models.FilterCountModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_count, 2)
             master.items.filter(active=False).delete()
@@ -694,7 +731,7 @@ if connection.vendor != "sqlite":
             self.assertEqual(master.active_item_sum, 8)
             master.counts.create(age=16, active_item_count=10)
             master = models.FilterSumModel.objects.get(id=master.id)
-            self.assertEqual(master.active_item_sum, 8, 'created inactive item')
+            self.assertEqual(master.active_item_sum, 8, "created inactive item")
             master.counts.create(age=19, active_item_count=9)
             master = models.FilterSumModel.objects.get(pk=master.pk)
             self.assertEqual(master.active_item_sum, 17)
@@ -717,39 +754,38 @@ if connection.vendor != "sqlite":
 
 
 class CommandsTestCase(TransactionTestCase):
-    def test_denorm_daemon(self):
-        " Test denorm_daemon command."
+    @patch("select.select")
+    def test_denorm_queue(self, select):
+        "Test denorm_queue command."
+        call_command("denorm_queue", run_once=True)
+        select.assert_called_once()
 
-        call_command('denorm_daemon', run_once=True, foreground=True)
-
-    if Decimal('.'.join([str(i) for i in django.VERSION[:2]])) >= Decimal('1.7'):
-        def test_makemigrations(self):
-            " Test makemigrations command."
-
-            args = []
-            opts = {}
-            call_command('makemigrations', *args, **opts)
+    def test_makemigrations(self):
+        "Test makemigrations command."
+        call_command("makemigrations", verbosity=0)
 
     def test_denorm_init(self):
-        " Test denorm_init command."
-        call_command('denorm_init')
+        "Test denorm_init command."
+        call_command("denorm_init")
 
     def test_denorm_drop(self):
-        " Test denorm_init command."
-        call_command('denorm_drop')
+        "Test denorm_init command."
+        call_command("denorm_drop")
 
     def test_denorm_flush(self):
-        " Test denorm_init command."
-        call_command('denorm_flush')
+        "Test denorm_init command."
+        call_command("denorm_flush")
 
     def test_denorm_rebuild(self):
-        " Test denorm_init command."
-        call_command('denorm_rebuild')
+        "Test denorm_init command."
+        call_command("denorm_rebuild")
 
     def test_denorm_sql(self):
-        " Test denorm_init command."
-        call_command('denorm_sql')
+        "Test denorm_init command."
+        import sys
 
-    def test_denormalize(self):
-        " Test denorm_init command."
-        self.assertRaises(django.core.management.base.CommandError, call_command, 'denormalize')
+        sys.stdout = StringIO()
+
+        call_command("denorm_sql")
+
+        sys.stdout = sys.__stdout__
