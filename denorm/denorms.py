@@ -2,6 +2,7 @@
 import abc
 import logging
 import traceback
+from itertools import islice
 
 from django.apps import apps
 from django.contrib import contenttypes
@@ -710,15 +711,21 @@ class CountDenorm(AggregateDenorm):
 def rebuild_instances_of(model, *args, **kwargs):
     # create DirtyInstance for all models
 
+    from denorm.conf import settings
+
     from .models import DirtyInstance
 
     content_type = contenttypes.models.ContentType.objects.get_for_model(model)
-    DirtyInstance.objects.bulk_create(
-        [
-            DirtyInstance(content_type_id=content_type.pk, object_id=pk)
-            for pk in model.objects.filter(*args, **kwargs).values_list("pk", flat=True)
-        ]
+    objs = (
+        DirtyInstance(content_type=content_type, object_id=pk)
+        for pk in model.objects.filter(*args, **kwargs).values_list("pk", flat=True)
     )
+
+    while True:
+        batch = list(islice(objs, settings.DENORM_BATCH_SIZE))
+        if not batch:
+            break
+        DirtyInstance.objects.bulk_create(batch, settings.DENORM_BATCH_SIZE)
 
 
 def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
