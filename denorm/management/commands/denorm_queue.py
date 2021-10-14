@@ -37,7 +37,7 @@ class Command(BaseCommand):
         crs.execute(f"LISTEN {const.DENORM_QUEUE_NAME}")
 
         logger.info("Starting, running initial flush...")
-        denorms.flush()
+        denorms.flush(disable_housekeeping=disable_housekeeping)
 
         logger.info(
             f"waiting for notifications on channel '{const.DENORM_QUEUE_NAME}'..."

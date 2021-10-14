@@ -1,6 +1,11 @@
 Changelog
 =========
 
+0.5.3
+-----
+
+* select_for_update also for the updated object, so we won't get deadlocks
+
 0.5.2
 -----
 

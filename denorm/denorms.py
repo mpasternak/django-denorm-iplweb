@@ -831,7 +831,7 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
             )
 
             if not dirty_instance:
-                # Table is empty, leave
+                # Table is empty or all rows locked, leave
                 break
 
             # Find all similar objects (= updates to this instance) and lock them
@@ -841,19 +841,12 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
                 .values_list("func_name", flat=True)
             )
 
-            # Record was just locked! Leave the transaction and get the next one
-            if not dirty_instance:
-                print("MISS!")
-                continue
-
-            # Mark DirtyInstance as being processed
-            dirty_instance.mark_as_being_processed()
-
             if INTERACTIVE:
                 DirtyInstance.objects.dump()
                 breakpoint()
 
-            obj = dirty_instance.content_object
+            obj = dirty_instance.content_object_for_update()
+
             if obj is None:
                 dirty_instance.mark_as_failed("obj does not exist anymore")
                 dirty_instance.delete_this_and_similar()
