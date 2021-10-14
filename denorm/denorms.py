@@ -886,7 +886,6 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
                 dirty_instance.delete_this_and_similar()
 
             except Exception:
-                # TODO: full traceback
                 dirty_instance.mark_as_failed(traceback.format_exc())
 
     # TODO: keep housekeeping to single thread, to reduce db load
