@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.db import models
+from django.db import OperationalError, models
 from django.utils import timezone
 
 DEFAULT_TIMEOUT = timedelta(minutes=5)
@@ -140,11 +140,15 @@ class DirtyInstance(models.Model):
         """Returns a self.content_object, only locked for update. Needs
         to run inside a transaciton. Can return None because nowait=True"""
         klass = self.content_type.model_class()
-        return (
-            klass.objects.select_for_update(nowait=True)
-            .filter(pk=self.object_id)
-            .first()
-        )
+        try:
+            return (
+                klass.objects.select_for_update(nowait=True)
+                .filter(pk=self.object_id)
+                .first()
+            )
+        except OperationalError:
+            # could not obtain lock on row in relation ...
+            pass
 
     def find_similar(self):
         """Find similar objects to this one. Same content_type, same object_id; func_name if this
