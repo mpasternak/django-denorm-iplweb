@@ -4,7 +4,7 @@ from setuptools import setup
 
 setup(
     name="django-denorm-iplweb",
-    version="0.5.1",
+    version="0.5.2",
     description="Denormalization magic for Django",
     long_description="django-denorm-iplweb is a Django application to provide "
     "automatic management of denormalized database fields.",
@@ -20,6 +20,7 @@ setup(
     ],
     packages=[
         "denorm",
+        "denorm.conf",
         "denorm.db",
         "denorm.management",
         "denorm.management.commands",

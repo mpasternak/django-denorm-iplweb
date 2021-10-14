@@ -1,6 +1,11 @@
 Changelog
 =========
 
+0.5.2
+-----
+
+* include missing ``conf`` package.
+
 0.5.1
 -----
 
