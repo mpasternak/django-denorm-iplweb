@@ -53,7 +53,7 @@ class DirtyInstanceManager(models.Manager):
 
     def dump(self):
         def _rows():
-            for elem in self.all().order_by("created_on"):
+            for elem in self.all().order_by("created_on")[:500]:
                 yield (
                     elem.pk,
                     elem.content_type,
