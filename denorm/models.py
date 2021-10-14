@@ -136,6 +136,16 @@ class DirtyInstance(models.Model):
             ret += f", traceback={self.traceback}"
         return ret
 
+    def content_object_for_update(self):
+        """Returns a self.content_object, only locked for update. Needs
+        to run inside a transaciton. Can return None because nowait=True"""
+        klass = self.content_type.model_class()
+        return (
+            klass.objects.select_for_update(nowait=True)
+            .filter(pk=self.object_id)
+            .first()
+        )
+
     def find_similar(self):
         """Find similar objects to this one. Same content_type, same object_id; func_name if this
         object has func_name, but in case of no func name -- find all objects, as no func name
