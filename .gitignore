@@ -11,3 +11,4 @@ django_denorm_iplweb.egg-info
 test_denorm_project/.coverage
 \#*
 .#*
+build/
