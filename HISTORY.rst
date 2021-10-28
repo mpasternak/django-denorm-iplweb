@@ -1,6 +1,12 @@
 Changelog
 =========
 
+0.5.4
+-----
+
+* don't wait for content_object when flushing queue, so we won't get deadlocks and
+  Django exceptions
+
 0.5.3
 -----
 
