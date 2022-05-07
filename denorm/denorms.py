@@ -817,6 +817,9 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
     autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
 
     cnt = 0
+
+    skip_those_ids = []
+
     while True:
         cnt += 1
         if cnt == 2 and run_once:
@@ -824,14 +827,21 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
 
         with transaction.atomic():
 
+            items_to_process = DirtyInstance.objects.process_next()
+            for ctype_id, obj_id in skip_those_ids:
+                # print(f"PID {os.getpid()} skipping {ctype_id, obj_id}")
+                items_to_process = items_to_process.exclude(
+                    Q(content_type_id=ctype_id, object_id=obj_id)
+                )
+
             dirty_instance = (
-                DirtyInstance.objects.process_next()[:1]
+                items_to_process[:1]
                 .select_for_update(of=("self",), skip_locked=True)
                 .first()
             )
 
             if not dirty_instance:
-                # Table is empty or all rows locked, leave
+                # Table is empty or all rows locked, exit main loop
                 break
 
             # Find all similar objects (= updates to this instance) and lock them
@@ -845,7 +855,16 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
                 DirtyInstance.objects.dump()
                 breakpoint()
 
-            obj = dirty_instance.content_object_for_update()
+            try:
+                obj = dirty_instance.content_object_for_update()
+            except OperationalError:
+                # This is locked, add tho the list of skipped items
+                elem = (dirty_instance.content_type_id, dirty_instance.object_id)
+                skip_those_ids.append(elem)
+                # print("Locked! PID: ", os.getpid(), " for ", elem)
+                continue
+
+            skip_those_ids = []
 
             if obj is None:
                 dirty_instance.mark_as_failed("obj does not exist anymore")

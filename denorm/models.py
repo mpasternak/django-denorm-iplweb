@@ -141,8 +141,8 @@ class DirtyInstance(models.Model):
         to run inside a transaciton. Can return None because nowait=True"""
         klass = self.content_type.model_class()
         return (
-            klass.objects.select_for_update(skip_locked=True)
-            .filter(pk=self.object_id)
+            klass.objects.filter(pk=self.object_id)
+            .select_for_update(nowait=True)
             .first()
         )
 
