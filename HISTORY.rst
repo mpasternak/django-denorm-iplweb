@@ -1,6 +1,12 @@
 Changelog
 =========
 
+0.5.5
+-----
+
+* changes to reduce the chance of multiple ``denorm_queue`` processes trying
+  to denormalize the same object
+
 0.5.4
 -----
 
