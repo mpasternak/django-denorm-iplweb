@@ -32,4 +32,4 @@ Documentation is available from http://django-denorm-iplweb.github.io/django-den
 
 Issues can be reported at http://github.com/mpasternak/django-denorm-iplweb/issues
 
-.. image:: https://github.com/mpasternak/django-denorm-iplweb/actions/workflows/main.yml/badge.svg
+.. image:: https://github.com/mpasternak/django-denorm-iplweb/actions/workflows/tests.yml/badge.svg
