@@ -1,4 +1,6 @@
 
+.. image:: https://github.com/mpasternak/django-denorm-iplweb/actions/workflows/tests.yml/badge.svg
+
 django-denorm-iplweb is a Django application to provide automatic management of denormalized database fields.
 
 This is a fork of original package, that went by name of django-denorm_ . This fork should bring original
@@ -31,5 +33,3 @@ Patches welcome!
 Documentation is available from http://django-denorm-iplweb.github.io/django-denorm-iplweb/
 
 Issues can be reported at http://github.com/mpasternak/django-denorm-iplweb/issues
-
-.. image:: https://github.com/mpasternak/django-denorm-iplweb/actions/workflows/tests.yml/badge.svg
