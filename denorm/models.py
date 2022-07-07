@@ -121,7 +121,7 @@ class DirtyInstance(models.Model):
     created_on = models.DateTimeField(auto_now_add=True, db_index=True)
     processing_started = models.DateTimeField(null=True, blank=True, db_index=True)
     processing_finished = models.DateTimeField(null=True, blank=True)
-    success = models.NullBooleanField(db_index=True)
+    success = models.BooleanField(db_index=True, null=True)
     traceback = models.TextField(null=True, blank=True)
 
     def __str__(self):
