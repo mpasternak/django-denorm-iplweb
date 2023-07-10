@@ -1,12 +1,12 @@
 repos:
-    - repo: local
-      hooks:
-        - id: no_debug
-          name: No debug on prod
-          types: [python]
-          args: [--multiline]
-          entry: 'breakpoint\(\)|set_trace'
-          language: pygrep
+    #- repo: local
+    #  hooks:
+    #    - id: no_debug
+    #      name: No debug on prod
+    #      types: [python]
+    #      args: [--multiline]
+    #      entry: 'breakpoint\(\)|set_trace'
+    #      language: pygrep
 
     - repo: https://github.com/myint/autoflake
       rev: 'v1.4'

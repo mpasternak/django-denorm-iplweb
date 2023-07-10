@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import abc
 import logging
 import traceback
@@ -6,7 +5,7 @@ from itertools import islice
 
 from django.apps import apps
 from django.contrib import contenttypes
-from django.core.exceptions import FieldDoesNotExist
+from django.core.exceptions import FieldDoesNotExist, FullResultSet
 from django.db import OperationalError, connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
@@ -85,7 +84,7 @@ def get_alldenorms():
     return alldenorms
 
 
-class Denorm(object):
+class Denorm:
     def __init__(self, skip=None, only=None):
         self.func = None
         self.skip = skip
@@ -122,8 +121,8 @@ class Denorm(object):
             # for a many to many field the decorated
             # function should return a list of either model instances
             # or primary keys
-            old_pks = set([x.pk for x in attr.all()])
-            new_pks = set([])
+            old_pks = {x.pk for x in attr.all()}
+            new_pks = set()
 
             for x in new_value:
                 # we need to compare sets of objects based on pk values,
@@ -161,7 +160,7 @@ class BaseCallbackDenorm(Denorm):
         """
         Calls setup() on all DenormDependency resolvers
         """
-        super(BaseCallbackDenorm, self).setup(**kwargs)
+        super().setup(**kwargs)
 
         for dependency in self.depend:
             dependency.setup(self.model)
@@ -177,7 +176,7 @@ class BaseCallbackDenorm(Denorm):
         # to our callback.
         for dependency in self.depend:
             trigger_list += dependency.get_triggers(using=using)
-        ret = trigger_list + super(BaseCallbackDenorm, self).get_triggers(using=using)
+        ret = trigger_list + super().get_triggers(using=using)
         return ret
 
 
@@ -234,13 +233,13 @@ class CallbackDenorm(BaseCallbackDenorm):
             ),
         ]
 
-        return trigger_list + super(CallbackDenorm, self).get_triggers(using=using)
+        return trigger_list + super().get_triggers(using=using)
 
 
 class BaseCacheKeyDenorm(Denorm):
     def __init__(self, depend_on_related, *args, **kwargs):
         self.depend = depend_on_related
-        super(BaseCacheKeyDenorm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         import random
 
         self.func = lambda o: random.randint(-9223372036854775808, 9223372036854775807)
@@ -249,7 +248,7 @@ class BaseCacheKeyDenorm(Denorm):
         """
         Calls setup() on all DenormDependency resolvers
         """
-        super(BaseCacheKeyDenorm, self).setup(**kwargs)
+        super().setup(**kwargs)
 
         for dependency in self.depend:
             dependency.setup(self.model)
@@ -266,7 +265,7 @@ class BaseCacheKeyDenorm(Denorm):
         for dependency in self.depend:
             trigger_list += dependency.get_triggers(using=using)
 
-        return trigger_list + super(BaseCacheKeyDenorm, self).get_triggers(using=using)
+        return trigger_list + super().get_triggers(using=using)
 
 
 class CacheKeyDenorm(BaseCacheKeyDenorm):
@@ -317,7 +316,7 @@ class CacheKeyDenorm(BaseCacheKeyDenorm):
             ),
         ]
 
-        return trigger_list + super(CacheKeyDenorm, self).get_triggers(using=using)
+        return trigger_list + super().get_triggers(using=using)
 
 
 class TriggerWhereNode(WhereNode):
@@ -330,9 +329,9 @@ class TriggerWhereNode(WhereNode):
         table_alias, name, db_type = data
         if table_alias:
             if table_alias in ("NEW", "OLD"):
-                lhs = "%s.%s" % (table_alias, qn(name))
+                lhs = f"{table_alias}.{qn(name)}"
             else:
-                lhs = "%s.%s" % (qn(table_alias), qn(name))
+                lhs = f"{qn(table_alias)}.{qn(name)}"
         else:
             lhs = qn(name)
         try:
@@ -344,7 +343,7 @@ class TriggerWhereNode(WhereNode):
 
 class TriggerFilterQuery(sql.Query):
     def __init__(self, model, trigger_alias, where=TriggerWhereNode):
-        super(TriggerFilterQuery, self).__init__(model, where)
+        super().__init__(model, where)
         self.trigger_alias = trigger_alias
         try:
 
@@ -373,7 +372,7 @@ class AggregateDenorm(Denorm):
         # as we connected to the ``class_prepared`` signal for any sender
         # and we only need to setup once, check if the sender is our model.
         if sender is self.model:
-            super(AggregateDenorm, self).setup(sender=sender, **kwargs)
+            super().setup(sender=sender, **kwargs)
 
         # related managers will only be available after both models are initialized
         # so check if its available already, and get our manager
@@ -499,8 +498,8 @@ class AggregateDenorm(Denorm):
         else:
             pk_name = qn(self.model._meta.pk.get_attname_column()[1])
             fk_name = qn(related_field.attname)
-            inc_where = ["%s = NEW.%s" % (pk_name, fk_name)]
-            dec_where = ["%s = OLD.%s" % (pk_name, fk_name)]
+            inc_where = [f"{pk_name} = NEW.{fk_name}"]
+            dec_where = [f"{pk_name} = OLD.{fk_name}"]
 
         content_type = str(
             contenttypes.models.ContentType.objects.get_for_model(self.model).pk
@@ -514,13 +513,19 @@ class AggregateDenorm(Denorm):
         inc_query.add_q(Q(**self.filter))
         inc_query.add_q(~Q(**self.exclude))
         qn = SQLCompiler(inc_query, cconnection, using)
-        inc_filter_where, _ = inc_query.where.as_sql(qn, cconnection)
+        try:
+            inc_filter_where, _ = inc_query.where.as_sql(qn, cconnection)
+        except FullResultSet:
+            inc_filter_where, _ = ("", "")
 
         dec_query = TriggerFilterQuery(related_model, trigger_alias="OLD")
         dec_query.add_q(Q(**self.filter))
         dec_query.add_q(~Q(**self.exclude))
         qn = SQLCompiler(dec_query, cconnection, using)
-        dec_filter_where, where_params = dec_query.where.as_sql(qn, cconnection)
+        try:
+            dec_filter_where, where_params = dec_query.where.as_sql(qn, cconnection)
+        except FullResultSet:
+            dec_filter_where, where_params = ("", "")
 
         if inc_filter_where:
             inc_where.append(inc_filter_where)
@@ -594,7 +599,7 @@ class SumDenorm(AggregateDenorm):
     """
 
     def __init__(self, skip=None, field=None):
-        super(SumDenorm, self).__init__(skip)
+        super().__init__(skip)
         # in case we want to set the value without relying on the
         # correctness of the incremental updates we create a function that
         # calculates it from scratch.
@@ -611,12 +616,12 @@ class SumDenorm(AggregateDenorm):
     def get_increment_value(self, using):
         qn = self.get_quote_name(using)
 
-        return "%s + NEW.%s" % (qn(self.fieldname), qn(self.sum_field))
+        return f"{qn(self.fieldname)} + NEW.{qn(self.sum_field)}"
 
     def get_decrement_value(self, using):
         qn = self.get_quote_name(using)
 
-        return "%s - OLD.%s" % (qn(self.fieldname), qn(self.sum_field))
+        return f"{qn(self.fieldname)} - OLD.{qn(self.sum_field)}"
 
     def get_related_increment_value(self, using):
         qn = self.get_quote_name(using)
@@ -643,7 +648,7 @@ class SumDenorm(AggregateDenorm):
         related_filter_where, related_where_params = related_query.get_compiler(
             using=using
         ).as_sql()
-        return "%s + (%s)" % (qn(self.fieldname), related_filter_where)
+        return f"{qn(self.fieldname)} + ({related_filter_where})"
 
     def get_related_decrement_value(self, using):
         qn = self.get_quote_name(using)
@@ -670,7 +675,7 @@ class SumDenorm(AggregateDenorm):
         related_filter_where, related_where_params = related_query.get_compiler(
             using=using
         ).as_sql()
-        return "%s - (%s)" % (qn(self.fieldname), related_filter_where)
+        return f"{qn(self.fieldname)} - ({related_filter_where})"
 
 
 class CountDenorm(AggregateDenorm):
@@ -680,7 +685,7 @@ class CountDenorm(AggregateDenorm):
     """
 
     def __init__(self, skip=None, only=None):
-        super(CountDenorm, self).__init__(skip=skip, only=only)
+        super().__init__(skip=skip, only=only)
         # in case we want to set the value without relying on the
         # correctness of the incremental updates we create a function that
         # calculates it from scratch.
@@ -738,7 +743,7 @@ def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
     for denorm in alldenorms:
         current_app_label = denorm.model._meta.app_label
         current_model_name = denorm.model._meta.model.__name__
-        current_app_model = "%s.%s" % (current_app_label, current_model_name)
+        current_app_model = f"{current_app_label}.{current_model_name}"
         if model_name is None or model_name.lower() in (
             current_app_label.lower(),
             current_model_name.lower(),
@@ -753,7 +758,7 @@ def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
             for denorm in denorms:
                 msg = (
                     "making dirty instances",
-                    "%s/%s" % (i + 1, len(alldenorms)),
+                    f"{i + 1}/{len(alldenorms)}",
                     denorm.fieldname,
                     "in",
                     denorm.model,
@@ -826,7 +831,6 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
             break
 
         with transaction.atomic():
-
             items_to_process = DirtyInstance.objects.process_next()
             for ctype_id, obj_id in skip_those_ids:
                 # print(f"PID {os.getpid()} skipping {ctype_id, obj_id}")
@@ -853,7 +857,7 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
 
             if INTERACTIVE:
                 DirtyInstance.objects.dump()
-                breakpoint()
+                breakpoint()  # noqa
 
             try:
                 obj = dirty_instance.content_object_for_update()
