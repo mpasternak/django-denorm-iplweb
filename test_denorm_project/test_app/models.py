@@ -51,7 +51,7 @@ class AbstractDenormModel(models.Model):
 
     @denormalized(models.TextField)
     def ham(self):
-        return u"Ham and %s" % self.text
+        return "Ham and %s" % self.text
 
     class Meta:
         abstract = True
@@ -61,7 +61,7 @@ class AbstractDenormModel(models.Model):
 class DenormModel(AbstractDenormModel):
     @denormalized(models.TextField)
     def spam(self):
-        return u"Spam and %s" % self.text
+        return "Spam and %s" % self.text
 
     class Meta(AbstractDenormModel.Meta):
         swappable = "DENORM_MODEL"
@@ -70,7 +70,7 @@ class DenormModel(AbstractDenormModel):
 class RealDenormModel(AbstractDenormModel):
     @denormalized(models.TextField)
     def eggs(self):
-        return u"Eggs and %s" % self.text
+        return "Eggs and %s" % self.text
 
     class Meta(AbstractDenormModel.Meta):
         pass
@@ -92,7 +92,7 @@ class TaggedModel(models.Model):
     @denormalized(models.TextField)
     @depend_on_related(Tag)
     def tags_string(self):
-        return ", ".join(sorted([t.name for t in self.tags.all()]))
+        return ", ".join(sorted(t.name for t in self.tags.all()))
 
     class Meta:
         abstract = True
@@ -110,7 +110,9 @@ class Forum(TaggedModel):
     @denormalized(models.CharField, max_length=255)
     @depend_on_related("Post")
     def author_names(self):
-        return ", ".join((m.author_name for m in self.post_set.all()))
+        if not self.pk:
+            return ""
+        return ", ".join(m.author_name for m in self.post_set.all())
 
     @denormalized(models.ManyToManyField, "Member", blank=True)
     @depend_on_related("Post")
@@ -160,14 +162,14 @@ class Post(TaggedModel):
         else:
             return ""
 
-    @denormalized(models.PositiveIntegerField)
+    @denormalized(models.PositiveIntegerField, default=0)
     @depend_on_related("self", type="backward")
     def response_count(self):
         # Work around odd issue during testing with PostgresDB
         if not self.pk:
             return 0
         rcount = self.responses.count()
-        rcount += sum((x.response_count for x in self.responses.all()))
+        rcount += sum(x.response_count for x in self.responses.all())
         return rcount
 
 
@@ -190,7 +192,12 @@ class Attachment(models.Model):
     cachekey.depend_on_related("Post")
 
     @denormalized(
-        models.ForeignKey, Forum, blank=True, null=True, on_delete=models.CASCADE
+        models.ForeignKey,
+        Forum,
+        blank=True,
+        null=True,
+        on_delete=models.CASCADE,
+        default=None,
     )
     @depend_on_related(Post)
     def forum(self):
@@ -214,7 +221,7 @@ class Member(models.Model):
 
     @denormalized(models.CharField, max_length=255)
     def full_name(self):
-        return u"%s %s" % (self.first_name, self.name)
+        return f"{self.first_name} {self.name}"
 
     @denormalized(models.TextField, null=True, blank=True)
     @depend_on_related("Post", foreign_key="bookmarks")
@@ -289,7 +296,9 @@ class Team(models.Model):
     @denormalized(models.TextField)
     @depend_on_related("Competitor")
     def user_string(self):
-        return ", ".join(sorted([u.name for u in self.competitor_set.all()]))
+        if not self.pk:
+            return ""
+        return ", ".join(sorted(u.name for u in self.competitor_set.all()))
 
 
 class Competitor(models.Model):

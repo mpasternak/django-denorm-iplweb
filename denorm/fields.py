@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from django.conf import settings
 from django.db import connection, models
 
@@ -64,6 +63,11 @@ def denormalized(DBField, *args, **kwargs):
             """
             Updates the value of the denormalized field before it gets saved.
             """
+            # if not model_instance.pk:
+            #     # Object is not yet created, there is no PK. We are unable to query for
+            #     # the _sets of linked objects or so. We need to return the reasonable default
+            #     return getattr(self, "default")
+
             value = self.denorm.func(model_instance)
 
             if hasattr(self, "remote_field") and self.remote_field:  # Django>=1.10
@@ -87,7 +91,7 @@ def denormalized(DBField, *args, **kwargs):
                 return value
 
         def deconstruct(self):
-            name, path, args, kwargs = super(DenormDBField, self).deconstruct()
+            name, path, args, kwargs = super().deconstruct()
             super_name, super_path, super_args, super_kwargs = DBField(
                 *args, **kwargs
             ).deconstruct()
@@ -140,13 +144,13 @@ class AggregateField(models.PositiveIntegerField):
         self.kwargs = kwargs
         kwargs["default"] = 0
         kwargs["editable"] = False
-        super(AggregateField, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
     def contribute_to_class(self, cls, name, *args, **kwargs):
         self.denorm.model = cls
         self.denorm.fieldname = name
         models.signals.class_prepared.connect(self.denorm.setup)
-        super(AggregateField, self).contribute_to_class(cls, name, *args, **kwargs)
+        super().contribute_to_class(cls, name, *args, **kwargs)
 
     def pre_save(self, model_instance, add):
         """
@@ -169,7 +173,7 @@ class AggregateField(models.PositiveIntegerField):
         return value
 
     def deconstruct(self):
-        name, path, args, kwargs = super(AggregateField, self).deconstruct()
+        name, path, args, kwargs = super().deconstruct()
         del kwargs["editable"]
         args = [self.denorm.manager_name] + args
         return name, path, args, kwargs
@@ -202,7 +206,7 @@ class CountField(AggregateField):
         """
 
         kwargs["editable"] = False
-        super(CountField, self).__init__(manager_name, **kwargs)
+        super().__init__(manager_name, **kwargs)
 
     def get_denorm(self, skip):
         return denorms.CountDenorm(skip)
@@ -220,7 +224,7 @@ class SumField(AggregateField):
     def __init__(self, manager_name=None, field=None, **kwargs):
         self.field = field
         kwargs["editable"] = False
-        super(SumField, self).__init__(manager_name, **kwargs)
+        super().__init__(manager_name, **kwargs)
 
     def get_denorm(self, skip):
         return denorms.SumDenorm(skip, self.field)
@@ -244,7 +248,7 @@ class CacheKeyField(models.BigIntegerField):
         kwargs["default"] = 0
         kwargs["editable"] = False
         self.kwargs = kwargs
-        super(CacheKeyField, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
     def depend_on_related(self, *args, **kwargs):
         """
@@ -262,7 +266,7 @@ class CacheKeyField(models.BigIntegerField):
         self.denorm.model = cls
         self.denorm.fieldname = name
         models.signals.class_prepared.connect(self.denorm.setup)
-        super(CacheKeyField, self).contribute_to_class(cls, name, *args, **kwargs)
+        super().contribute_to_class(cls, name, *args, **kwargs)
 
     def pre_save(self, model_instance, add):
         value = self.denorm.func(model_instance)
@@ -270,7 +274,7 @@ class CacheKeyField(models.BigIntegerField):
         return value
 
 
-class CacheWrapper(object):
+class CacheWrapper:
     def __init__(self, field):
         self.field = field
 
@@ -287,13 +291,13 @@ class CachedField(CacheKeyField):
     def __init__(self, func=None, cache=None, *args, **kwargs):
         self.func = func
         self.cache = cache
-        super(CachedField, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         if func and cache:
             for c, a, kw in self.func.depend:
                 self.depend_on_related(*a, **kw)
 
     def contribute_to_class(self, cls, name, *args, **kwargs):
-        super(CachedField, self).contribute_to_class(cls, name, *args, **kwargs)
+        super().contribute_to_class(cls, name, *args, **kwargs)
         setattr(cls, self.name, CacheWrapper(self))
 
 

@@ -5,7 +5,16 @@ from itertools import islice
 
 from django.apps import apps
 from django.contrib import contenttypes
-from django.core.exceptions import FieldDoesNotExist, FullResultSet
+from django.core.exceptions import FieldDoesNotExist
+
+try:
+    from django.core.exceptions import FullResultSet
+except ImportError:
+
+    class FullResultSet(Exception):
+        pass
+
+
 from django.db import OperationalError, connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
