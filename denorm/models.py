@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from datetime import timedelta
 
 from django.contrib.contenttypes.fields import GenericForeignKey
@@ -142,7 +141,7 @@ class DirtyInstance(models.Model):
         klass = self.content_type.model_class()
         return (
             klass.objects.filter(pk=self.object_id)
-            .select_for_update(nowait=True)
+            .select_for_update(nowait=True, skip_locked=True)
             .first()
         )
 
@@ -159,7 +158,7 @@ class DirtyInstance(models.Model):
         """Remove similar DirtyInstances from db, which we haven't yet processed"""
         self.find_similar().filter(
             processing_started=None,
-        ).delete()
+        ).select_for_update(nowait=True, skip_locked=True).delete()
 
     def delete_this_and_similar(self):
         self.delete_similar()
