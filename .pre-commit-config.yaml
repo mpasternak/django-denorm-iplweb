@@ -21,7 +21,7 @@ repos:
           args: ['--in-place', '-aaa',]
 
     - repo: https://github.com/hadialqattan/pycln
-      rev: 'v1.1.0'
+      rev: 'v2.5.0'
       hooks:
         - id: pycln
 
