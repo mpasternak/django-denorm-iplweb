@@ -840,18 +840,18 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
             break
 
         with transaction.atomic():
-            items_to_process = DirtyInstance.objects.process_next()
+            items_to_process = (
+                DirtyInstance.objects.select_for_update(skip_locked=True)
+                .filter(processing_started=None)
+                .order_by("-created_on", "-func_name")
+            )
             for ctype_id, obj_id in skip_those_ids:
                 # print(f"PID {os.getpid()} skipping {ctype_id, obj_id}")
                 items_to_process = items_to_process.exclude(
                     Q(content_type_id=ctype_id, object_id=obj_id)
                 )
 
-            dirty_instance = (
-                items_to_process[:1]
-                .select_for_update(of=("self",), skip_locked=True)
-                .first()
-            )
+            dirty_instance = items_to_process[:1].first()
 
             if not dirty_instance:
                 # Table is empty or all rows locked, exit main loop
@@ -859,9 +859,7 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
 
             # Find all similar objects (= updates to this instance) and lock them
             func_names = set(
-                dirty_instance.find_similar()
-                .select_for_update(of=("self",), skip_locked=True)
-                .values_list("func_name", flat=True)
+                dirty_instance.find_similar().values_list("func_name", flat=True)
             )
 
             if INTERACTIVE:

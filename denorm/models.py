@@ -11,11 +11,6 @@ WEEK_AGO = timedelta(days=7)
 
 
 class DirtyInstanceManager(models.Manager):
-    def process_next(self):
-        return self.filter(processing_started=None).order_by(
-            "-created_on", "-func_name"
-        )
-
     def in_processing(self):
         return self.exclude(processing_started=None).filter(processing_finished=None)
 
@@ -139,17 +134,16 @@ class DirtyInstance(models.Model):
         """Returns a self.content_object, only locked for update. Needs
         to run inside a transaciton. Can return None because nowait=True"""
         klass = self.content_type.model_class()
-        return (
-            klass.objects.filter(pk=self.object_id)
-            .select_for_update(skip_locked=True)
-            .first()
-        )
+        try:
+            return klass.objects.select_for_update().get(pk=self.object_id)
+        except klass.DoesNotExist:
+            return
 
     def find_similar(self):
         """Find similar objects to this one. Same content_type, same object_id; func_name if this
         object has func_name, but in case of no func name -- find all objects, as no func name
         means even broader scope:"""
-        return DirtyInstance.objects.filter(
+        return DirtyInstance.objects.select_for_update(skip_locked=True).filter(
             content_type=self.content_type,
             object_id=self.object_id,
         )
@@ -158,7 +152,7 @@ class DirtyInstance(models.Model):
         """Remove similar DirtyInstances from db, which we haven't yet processed"""
         self.find_similar().filter(
             processing_started=None,
-        ).select_for_update(skip_locked=True).delete()
+        ).delete()
 
     def delete_this_and_similar(self):
         self.delete_similar()
