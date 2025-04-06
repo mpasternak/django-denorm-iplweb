@@ -913,7 +913,7 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
                     # Let's bail-out and end this transaction.
                     continue
 
-                dirty_instance.delete_this_and_similar()
+                dirty_instance.delete()
 
             except Exception:
                 dirty_instance.mark_as_failed(traceback.format_exc())

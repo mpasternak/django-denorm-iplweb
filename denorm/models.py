@@ -149,9 +149,7 @@ class DirtyInstance(models.Model):
 
     def delete_similar(self):
         """Remove similar DirtyInstances from db, which we haven't yet processed"""
-        self.find_similar(processing_started=None).select_for_update(
-            skip_locked=True
-        ).delete()
+        self.find_similar(processing_started=None).delete()
 
     def delete_this_and_similar(self):
         self.delete_similar()
