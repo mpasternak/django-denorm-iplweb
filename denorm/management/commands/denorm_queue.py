@@ -6,8 +6,8 @@ import psycopg2.extensions
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-from denorm import denorms
 from denorm.db import const
+from denorm.tasks import flush_single
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,10 @@ class Command(BaseCommand):
             action="store_true",
             help="Used for testing. Causes event loop to run once. ",
         )
-        parser.add_argument(
-            "--disable-housekeeping",
-            action="store_true",
-            help="Disable housekeeping for this process",
-        )
 
-    def handle(self, run_once=False, disable_housekeeping=False, **options):
+    def handle(self, run_once=False, **options):
+        ran_once = False
+
         crs = (
             connection.cursor()
         )  # get the cursor and establish the connection.connection
@@ -37,21 +34,38 @@ class Command(BaseCommand):
         crs.execute(f"LISTEN {const.DENORM_QUEUE_NAME}")
 
         logger.info("Starting, running initial flush...")
-        denorms.flush(disable_housekeeping=disable_housekeeping)
 
         logger.info(
             f"waiting for notifications on channel '{const.DENORM_QUEUE_NAME}'..."
         )
         while True:
+            if ran_once and run_once:
+                break
+            ran_once = True
+
             try:
                 if select.select([pg_con], [], [], None) == ([], [], []):
                     logger.warning("timeout")
                 else:
                     pg_con.poll()
-                    while pg_con.notifies:
-                        pg_con.notifies.pop()
-                    denorms.flush(disable_housekeeping=disable_housekeeping)
+
+                    try:
+                        res = pg_con.notifies.pop()
+                    except IndexError:
+                        continue
+
+                    if res.payload is None:
+                        raise ValueError("Payload is None")
+
+                    try:
+                        pk = int(res.payload)
+                    except (TypeError, ValueError):
+                        raise ValueError("Unable to convert payload to int")
+
+                    # Payload is the ID in the django_denorm table of the newly created dirty instance,
+                    # one needs just to call the task of rebuilding it somewhere to a woker's queue:
+
+                    flush_single.delay(pk)
+
             except KeyboardInterrupt:
                 sys.exit()
-            if run_once:
-                break

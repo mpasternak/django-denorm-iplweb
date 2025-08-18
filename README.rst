@@ -7,16 +7,11 @@ This is a fork of original package, that went by name of django-denorm_ . This f
 package to the latest Django/Python versions. Also, support for pretty much anything that is not
 PostgreSQL was dropped.
 
-Python versions supported:
+Python versions supported: 3.8-3.10
 
-* 3.8,
-* 3.9.
+Django versions supported: 4-5.
 
-Django versions supported:
-
-* 3.0,
-* 3.1,
-* 3.2.
+Requires Celery.
 
 Reasons for this fork being PostgreSQL-only:
 

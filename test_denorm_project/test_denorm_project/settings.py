@@ -148,3 +148,5 @@ LOGGING = {
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
+
+CELERY_ALWAYS_EAGER = True

@@ -1,6 +1,5 @@
 import abc
 import logging
-import traceback
 from itertools import islice
 
 from django.apps import apps
@@ -810,7 +809,73 @@ def build_triggerset(using=None):
 INTERACTIVE = False
 
 
-def flush(verbose=False, run_once=False, disable_housekeeping=False):
+def flush_single(pk: int):
+    from denorm.conf import settings
+
+    from .models import DirtyInstance
+
+    disable_autotime_during_flush = settings.DENORM_DISABLE_AUTOTIME_DURING_FLUSH
+    autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
+
+    with transaction.atomic():
+        res = DirtyInstance.objects.filter(pk=pk).select_for_update(skip_locked=True)
+
+        if not res.exists():
+            return
+
+        dirty_instance = res.first()
+
+        similar = dirty_instance.find_similar().select_for_update()
+
+        try:
+            obj = dirty_instance.content_object_for_update()
+        except OperationalError:
+            # The object is probably locked right now. Cannot update it. Bail out.
+            return
+
+        if obj is None:
+            # Object does not exist any more
+            dirty_instance.delete_this_and_similar()
+            return
+
+        func_names = set(
+            [
+                dirty_instance.func_name,
+            ]
+            + list(similar.values_list("func_name", flat=True))
+        )
+
+        # At this point, all_func_names contains an iterable with all
+        # func_names attributes requested re-indexing.
+        kw = {}
+
+        # If there's a None in it, we might as well save the whole object without any filtering.
+        # If there is no None, we need to take all the functions that need rebuilding and update
+        # but only those parameters.
+        if None not in func_names:
+            # If not, we want to pass a list of all updated fields to update_fields,
+            # but first we need to check if they're callable and present on the object.
+            update_fields = []
+            for func_name in func_names:
+                try:
+                    obj._meta.get_field(func_name)
+                    update_fields.append(func_name)
+                except FieldDoesNotExist:
+                    continue
+
+            if update_fields:
+                kw = dict(update_fields=update_fields)
+
+        if disable_autotime_during_flush:
+            with suppress_autotime(obj, autotime_field_names):
+                obj.save(**kw)
+        else:
+            obj.save(**kw)
+
+        dirty_instance.delete_this_and_similar()
+
+
+def flush(run_once=False):
     """
     Updates all model instances marked as dirty by the DirtyInstance
     model.
@@ -823,101 +888,21 @@ def flush(verbose=False, run_once=False, disable_housekeeping=False):
     # may cause an other instance to be marked dirty (dependency chains)
 
     # Get all dirty markers
-    from denorm.conf import settings
+
+    ran_once = False
 
     from .models import DirtyInstance
 
-    disable_autotime_during_flush = settings.DENORM_DISABLE_AUTOTIME_DURING_FLUSH
-    autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
-
-    cnt = 0
-
-    skip_those_ids = []
-
     while True:
-        cnt += 1
-        if cnt == 2 and run_once:
+        if run_once and ran_once:
             break
 
-        with transaction.atomic():
-            items_to_process = (
-                DirtyInstance.objects.select_for_update(skip_locked=True)
-                .filter(processing_started=None)
-                .order_by("-created_on", "-func_name")
-            )
-            for ctype_id, obj_id in skip_those_ids:
-                # print(f"PID {os.getpid()} skipping {ctype_id, obj_id}")
-                items_to_process = items_to_process.exclude(
-                    Q(content_type_id=ctype_id, object_id=obj_id)
-                )
+        processed = 0
+        for pk in DirtyInstance.objects.all().values_list("pk", flat=True):
+            flush_single(pk)
+            processed += 1
 
-            dirty_instance = items_to_process[:1].first()
+        if not processed:
+            return
 
-            if not dirty_instance:
-                # Table is empty or all rows locked, exit main loop
-                break
-
-            # Find all similar objects (= updates to this instance) and lock them
-            func_names = set(
-                dirty_instance.find_similar().values_list("func_name", flat=True)
-            )
-
-            if INTERACTIVE:
-                DirtyInstance.objects.dump()
-                breakpoint()  # noqa
-
-            try:
-                obj = dirty_instance.content_object_for_update()
-            except OperationalError:
-                # This is locked, add tho the list of skipped items
-                elem = (dirty_instance.content_type_id, dirty_instance.object_id)
-                skip_those_ids.append(elem)
-                # print("Locked! PID: ", os.getpid(), " for ", elem)
-                continue
-
-            skip_those_ids = []
-
-            if obj is None:
-                dirty_instance.mark_as_failed("obj does not exist anymore")
-                dirty_instance.delete_this_and_similar()
-                continue
-
-            # At this point, all_func_names contains an iterable with all
-            # func_names attributes requested re-indexing.
-            kw = {}
-
-            if None not in func_names:
-                # If there's a None
-                # in it, we might as well save the whole object without any filtering.
-                # If not, we want to pass a list of all updated fields to update_fields,
-                # but first we need to check if they're callable and present on the object.
-                update_fields = []
-                for func_name in func_names:
-                    try:
-                        obj._meta.get_field(func_name)
-                        update_fields.append(func_name)
-                    except FieldDoesNotExist:
-                        continue
-
-                if update_fields:
-                    kw = dict(update_fields=update_fields)
-            try:
-                try:
-                    if disable_autotime_during_flush:
-                        with suppress_autotime(obj, autotime_field_names):
-                            obj.save(**kw)
-                    else:
-                        obj.save(**kw)
-                except OperationalError:
-                    # Possible deadlock. Saving traceback not possible at this point.
-                    # Let's bail-out and end this transaction.
-                    continue
-
-                dirty_instance.delete()
-
-            except Exception:
-                dirty_instance.mark_as_failed(traceback.format_exc())
-
-    # TODO: keep housekeeping to single thread, to reduce db load
-    if not disable_housekeeping:
-        DirtyInstance.objects.housekeeping()
+        ran_once = True
