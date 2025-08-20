@@ -33,8 +33,6 @@ class Command(BaseCommand):
         pg_con.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
         crs.execute(f"LISTEN {const.DENORM_QUEUE_NAME}")
 
-        logger.info("Starting, running initial flush...")
-
         logger.info(
             f"waiting for notifications on channel '{const.DENORM_QUEUE_NAME}'..."
         )
@@ -49,23 +47,24 @@ class Command(BaseCommand):
                 else:
                     pg_con.poll()
 
-                    try:
-                        res = pg_con.notifies.pop()
-                    except IndexError:
-                        continue
+                    while True:
+                        try:
+                            res = pg_con.notifies.pop()
+                        except IndexError:
+                            break
 
-                    if res.payload is None:
-                        raise ValueError("Payload is None")
+                        if res.payload is None:
+                            raise ValueError("Payload is None")
 
-                    try:
-                        pk = int(res.payload)
-                    except (TypeError, ValueError):
-                        raise ValueError("Unable to convert payload to int")
+                        try:
+                            pk = int(res.payload)
+                        except (TypeError, ValueError):
+                            raise ValueError("Unable to convert payload to int")
 
-                    # Payload is the ID in the django_denorm table of the newly created dirty instance,
-                    # one needs just to call the task of rebuilding it somewhere to a woker's queue:
-
-                    flush_single.delay(pk)
+                        # Payload is the ID in the django_denorm table of the newly created dirty instance,
+                        # one needs just to call the task of rebuilding it somewhere to a woker's queue:
+                        # flush_single.delay(pk)
+                        flush_single.apply_async(kwargs={"pk": pk}, ignore_result=True)
 
             except KeyboardInterrupt:
                 sys.exit()
