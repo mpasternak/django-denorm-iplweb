@@ -3,8 +3,8 @@ from celery import shared_task
 from denorm import denorms
 
 
-@shared_task
-def flush_single(pk):
+@shared_task(ignore_result=True)
+def flush_single(pk: int):
     denorms.flush_single(pk)
 
 
