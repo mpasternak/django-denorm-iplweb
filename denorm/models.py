@@ -32,14 +32,8 @@ class DirtyInstance(models.Model):
 
     def __str__(self):
         ret = f"DirtyInstance: {self.content_type}, {self.object_id}"
-        if self.func_name:
-            ret += f", func_name={self.func_name}"
-        ret += (
-            f", created_on={self.created_on}, processing_started={self.processing_started}, "
-            f"processing_finished={self.processing_finished}, success={self.success}"
-        )
-        if self.traceback:
-            ret += f", traceback={self.traceback}"
+        ret += f", {self.func_name=}"
+        ret += f", {self.created_on=}. "
         return ret
 
     def content_object_for_update(self):

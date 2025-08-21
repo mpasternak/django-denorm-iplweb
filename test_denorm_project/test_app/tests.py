@@ -131,6 +131,17 @@ class TestSkip(TransactionTestCase):
         denorm.flush()
 
 
+class TestDirtyInstance(TestCase):
+    def test___str__(self):
+        from test_app.models import CachedModelB
+
+        from denorm.models import DirtyInstance
+
+        x = CachedModelB.objects.create(data="Hello")
+        d = DirtyInstance(content_object=x, func_name=None)
+        assert str(d).find("DirtyInstance") >= 0
+
+
 class TestDenormalisation(TransactionTestCase):
     """
     Tests for the denormalisation fields.
