@@ -1,14 +1,15 @@
 from celery import shared_task
+from celery_singleton import Singleton
 
 from denorm import denorms
 
 
-@shared_task(ignore_result=True)
+@shared_task(base=Singleton, ignore_result=True)
 def flush_single(pk: int):
     denorms.flush_single(pk)
 
 
-@shared_task(ignore_result=True)
+@shared_task(base=Singleton, ignore_result=True)
 def flush_via_queue():
     from denorm.models import DirtyInstance
 
