@@ -18,11 +18,12 @@ class Migration(migrations.Migration):
       RETURNS trigger AS $$
     DECLARE
     BEGIN
-      PERFORM pg_notify('{const.DENORM_QUEUE_NAME}');
+      PERFORM pg_notify('{const.DENORM_QUEUE_NAME}', '');
       RETURN NEW;
     END;
     $$ LANGUAGE plpgsql;
 
+    DROP TRIGGER IF EXISTS notify_django_denorm ON denorm_dirtyinstance;
 
     CREATE OR REPLACE TRIGGER notify_django_denorm_queue
       AFTER INSERT ON denorm_dirtyinstance

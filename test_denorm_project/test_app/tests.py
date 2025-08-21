@@ -766,10 +766,12 @@ if connection.vendor != "sqlite":
 
 class CommandsTestCase(TransactionTestCase):
     @patch("select.select")
-    def test_denorm_queue(self, select):
+    @patch("denorm.tasks.flush_via_queue")
+    def test_denorm_queue(self, flush_via_queue, select):
         "Test denorm_queue command."
         call_command("denorm_queue", run_once=True)
         select.assert_called_once()
+        flush_via_queue.delay.assert_called_once()
 
     def test_makemigrations(self):
         "Test makemigrations command."

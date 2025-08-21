@@ -5,9 +5,9 @@ import sys
 import psycopg2.extensions
 from django.core.management.base import BaseCommand
 from django.db import connection
-from tasks import flush_via_queue
 
 from denorm.db import const
+from denorm.tasks import flush_via_queue
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class Command(BaseCommand):
                     logger.warning("timeout")
                 else:
                     pg_con.poll()
-                    flush_via_queue.apply_async()
+                    flush_via_queue.delay()
 
             except KeyboardInterrupt:
                 sys.exit()
