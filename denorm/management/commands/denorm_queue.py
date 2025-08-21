@@ -64,7 +64,7 @@ class Command(BaseCommand):
                         # Payload is the ID in the django_denorm table of the newly created dirty instance,
                         # one needs just to call the task of rebuilding it somewhere to a woker's queue:
                         # flush_single.delay(pk)
-                        flush_single.apply_async(kwargs={"pk": pk}, ignore_result=True)
+                        flush_single.apply_async(kwargs={"pk": pk})
 
             except KeyboardInterrupt:
                 sys.exit()
