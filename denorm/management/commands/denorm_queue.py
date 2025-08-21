@@ -5,9 +5,9 @@ import sys
 import psycopg2.extensions
 from django.core.management.base import BaseCommand
 from django.db import connection
+from tasks import flush_via_queue
 
 from denorm.db import const
-from denorm.tasks import flush_single
 
 logger = logging.getLogger(__name__)
 
@@ -46,25 +46,7 @@ class Command(BaseCommand):
                     logger.warning("timeout")
                 else:
                     pg_con.poll()
-
-                    while True:
-                        try:
-                            res = pg_con.notifies.pop()
-                        except IndexError:
-                            break
-
-                        if res.payload is None:
-                            raise ValueError("Payload is None")
-
-                        try:
-                            pk = int(res.payload)
-                        except (TypeError, ValueError):
-                            raise ValueError("Unable to convert payload to int")
-
-                        # Payload is the ID in the django_denorm table of the newly created dirty instance,
-                        # one needs just to call the task of rebuilding it somewhere to a woker's queue:
-                        # flush_single.delay(pk)
-                        flush_single.apply_async(kwargs={"pk": pk})
+                    flush_via_queue.apply_async()
 
             except KeyboardInterrupt:
                 sys.exit()
