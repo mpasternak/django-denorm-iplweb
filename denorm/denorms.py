@@ -825,7 +825,7 @@ def flush_single(pk: int):
 
         dirty_instance = res.first()
 
-        similar = dirty_instance.find_similar().select_for_update()
+        similar = dirty_instance.find_similar().select_for_update(skip_locked=True)
 
         try:
             obj = dirty_instance.content_object_for_update()
