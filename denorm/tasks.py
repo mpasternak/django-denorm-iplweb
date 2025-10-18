@@ -6,7 +6,13 @@ from denorm import denorms
 
 @shared_task(base=Singleton, ignore_result=True)
 def flush_single(pk: int):
-    denorms.flush_single(pk)
+    from denorm.models import DirtyInstance
+
+    try:
+        res = DirtyInstance.objects.get(pk=pk)
+    except DirtyInstance.DoesNotExist:
+        return True
+    denorms.flush_single(res.content_type_id, res.object_id, res.content_type)
 
 
 @shared_task(base=Singleton, ignore_result=True)

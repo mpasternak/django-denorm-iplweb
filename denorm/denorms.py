@@ -14,7 +14,7 @@ except ImportError:
         pass
 
 
-from django.db import OperationalError, connection, connections, transaction
+from django.db import connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
 from django.db.models.manager import Manager
@@ -809,7 +809,7 @@ def build_triggerset(using=None):
 INTERACTIVE = False
 
 
-def flush_single(pk: int):
+def flush_single(content_type_id, object_id, content_type=None):
     from denorm.conf import settings
 
     from .models import DirtyInstance
@@ -817,33 +817,27 @@ def flush_single(pk: int):
     disable_autotime_during_flush = settings.DENORM_DISABLE_AUTOTIME_DURING_FLUSH
     autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
 
+    if content_type is None:
+        from django.contrib.contenttypes.models import ContentType
+
+        content_type = ContentType.objects.get(pk=content_type_id)
+
     with transaction.atomic():
-        res = DirtyInstance.objects.filter(pk=pk).select_for_update(skip_locked=True)
+        res = DirtyInstance.objects.filter(
+            content_type_id=content_type.pk, object_id=object_id
+        ).select_for_update(skip_locked=True)
 
         if not res.exists():
             return
 
-        dirty_instance = res.first()
-
-        similar = dirty_instance.find_similar().select_for_update(skip_locked=True)
-
+        klass = content_type.model_class()
         try:
-            obj = dirty_instance.content_object_for_update()
-        except OperationalError:
-            # The object is probably locked right now. Cannot update it. Bail out.
+            obj = klass.objects.select_for_update().get(pk=object_id)
+        except klass.DoesNotExist:
+            res.delete()
             return
 
-        if obj is None:
-            # Object does not exist any more
-            dirty_instance.delete_this_and_similar()
-            return
-
-        func_names = set(
-            [
-                dirty_instance.func_name,
-            ]
-            + list(similar.values_list("func_name", flat=True))
-        )
+        func_names = set(list(res.values_list("func_name", flat=True)))
 
         # At this point, all_func_names contains an iterable with all
         # func_names attributes requested re-indexing.
@@ -872,7 +866,7 @@ def flush_single(pk: int):
         else:
             obj.save(**kw)
 
-        dirty_instance.delete_this_and_similar()
+        res.delete()
 
 
 def flush(run_once=False):
@@ -898,8 +892,12 @@ def flush(run_once=False):
             break
 
         processed = 0
-        for pk in DirtyInstance.objects.all().values_list("pk", flat=True):
-            flush_single(pk)
+        for content_type_id, object_id in (
+            DirtyInstance.objects.all()
+            .values_list("content_type_id", "object_id")
+            .distinct()
+        ):
+            flush_single(content_type_id, object_id)
             processed += 1
 
         if not processed:
