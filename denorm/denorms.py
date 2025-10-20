@@ -832,9 +832,15 @@ def flush_single(content_type_id, object_id, content_type=None):
 
         klass = content_type.model_class()
         try:
-            obj = klass.objects.select_for_update(of=("self",)).get(pk=object_id)
+            obj = klass.objects.select_for_update(of=("self",), nowait=True).get(
+                pk=object_id
+            )
         except klass.DoesNotExist:
             res.delete()
+            return
+
+        if obj is None:
+            # nowait=True, cos innego zablokowało ten element, wychodzimy
             return
 
         func_names = set(list(res.values_list("func_name", flat=True)))
