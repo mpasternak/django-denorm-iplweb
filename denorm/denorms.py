@@ -832,7 +832,7 @@ def flush_single(content_type_id, object_id, content_type=None):
 
         klass = content_type.model_class()
         try:
-            obj = klass.objects.select_for_update(of=("self",), nowait=True).get(
+            obj = klass.objects.select_for_update(of=("self",), skip_locked=True).get(
                 pk=object_id
             )
         except klass.DoesNotExist:
@@ -840,7 +840,7 @@ def flush_single(content_type_id, object_id, content_type=None):
             return
 
         if obj is None:
-            # nowait=True, cos innego zablokowało ten element, wychodzimy
+            # nowait=True raises OperationalError when row is locked, skip this update
             return
 
         func_names = set(list(res.values_list("func_name", flat=True)))
