@@ -1,5 +1,6 @@
 
 .. image:: https://github.com/mpasternak/django-denorm-iplweb/actions/workflows/tests.yml/badge.svg
+   :target: https://github.com/mpasternak/django-denorm-iplweb/actions/workflows/tests.yml
 
 django-denorm-iplweb is a Django application to provide automatic management of denormalized database fields.
 
