@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-django-denorm-iplweb is a Django application for automatic management of denormalized database fields. This is a PostgreSQL-only fork of the original django-denorm package, supporting Django 3.0+ and Python 3.8+.
+django-denorm-iplweb is a Django application for automatic management of denormalized database fields. This is a PostgreSQL-only fork of the original django-denorm package, supporting Django 4.2+/5.2+ and Python 3.10+.
 
 ## Development Commands
 
@@ -31,7 +31,7 @@ tox
 
 ### Version Management
 ```bash
-# Bump version using bumpver (configured in setup.cfg)
+# Bump version using bumpver (configured in pyproject.toml)
 bumpver update
 ```
 
