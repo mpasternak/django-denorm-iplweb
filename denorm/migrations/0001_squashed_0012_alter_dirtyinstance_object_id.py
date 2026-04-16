@@ -96,7 +96,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="dirtyinstance",
             name="success",
-            field=models.NullBooleanField(db_index=True),
+            field=models.BooleanField(db_index=True, null=True),
         ),
         migrations.RunSQL(
             sql="ALTER TABLE denorm_dirtyinstance ALTER COLUMN created_on SET DEFAULT CURRENT_TIMESTAMP",

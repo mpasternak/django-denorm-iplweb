@@ -34,6 +34,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="dirtyinstance",
             name="success",
-            field=models.NullBooleanField(db_index=True),
+            field=models.BooleanField(db_index=True, null=True),
         ),
     ]

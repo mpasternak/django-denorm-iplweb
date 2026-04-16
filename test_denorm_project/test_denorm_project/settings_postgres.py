@@ -9,7 +9,7 @@ if TOX_ENVIRONMENT:
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql_psycopg2",
+        "ENGINE": "django.db.backends.postgresql",
         "NAME": f"denorm_test{DB_SUFFIX}",
         "HOST": "localhost",
         "USER": "postgres",

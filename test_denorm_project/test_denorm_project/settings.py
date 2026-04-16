@@ -1,13 +1,6 @@
 # Django settings for test_project project.
-from decimal import Decimal
-
-import django
-
 DEBUG = True
-TEMPLATE_DEBUG = DEBUG
-# TEST_RUNNER = "djangosanetesting.testrunner.DstNoseTestSuiteRunner"
-if Decimal(".".join([str(i) for i in django.VERSION[:2]])) >= Decimal("1.6"):
-    TEST_RUNNER = "django.test.runner.DiscoverRunner"
+TEST_RUNNER = "django.test.runner.DiscoverRunner"
 
 ADMINS = (
     # ('Your Name', 'your_email@example.com'),
@@ -57,11 +50,6 @@ STATIC_ROOT = ""
 # Example: "http://media.lawrence.com/static/"
 STATIC_URL = "/static/"
 
-# URL prefix for admin static files -- CSS, JavaScript and images.
-# Make sure to use a trailing slash.
-# Examples: "http://foo.com/static/admin/", "/static/admin/".
-ADMIN_MEDIA_PREFIX = "/static/admin/"
-
 # Additional locations of static files
 STATICFILES_DIRS = (
     # Put strings here, like "/home/html/static" or "C:/www/django/static".
@@ -106,12 +94,9 @@ MIDDLEWARE = (
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    "django.contrib.auth.middleware.SessionAuthenticationMiddleware",
 )
 
 ROOT_URLCONF = "test_denorm_project.urls"
-
-TEMPLATE_DIRS = ()
 
 INSTALLED_APPS = (
     "django.contrib.auth",
