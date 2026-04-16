@@ -4,6 +4,19 @@ from django.db import connection, models
 from . import denorms
 
 
+def _clear_denorm_pre_save_cache(sender, instance, **kwargs):
+    """Clear cached pre_save values after save completes.
+
+    Django 6.0+ may call Field.pre_save() multiple times per save().
+    We cache the result to ensure idempotency, but must clear it after
+    save() finishes so that subsequent saves recompute the value.
+    See: https://code.djangoproject.com/ticket/36855
+    """
+    for attr in list(vars(instance)):
+        if attr.startswith("_denorm_pre_save_"):
+            delattr(instance, attr)
+
+
 def denormalized(DBField, *args, **kwargs):
     """
     Turns a callable into model field, analogous to python's ``@property`` decorator.
@@ -25,7 +38,6 @@ def denormalized(DBField, *args, **kwargs):
     """
 
     class DenormDBField(DBField):
-
         """
         Special subclass of the given DBField type, with a few extra additions.
         """
@@ -57,22 +69,33 @@ def denormalized(DBField, *args, **kwargs):
             # Add The many to many signal for this class
             models.signals.pre_save.connect(denorms.many_to_many_pre_save, sender=cls)
             models.signals.post_save.connect(denorms.many_to_many_post_save, sender=cls)
+            models.signals.post_save.connect(
+                _clear_denorm_pre_save_cache,
+                sender=cls,
+                dispatch_uid=f"denorm_clear_pre_save_cache_{cls.__name__}",
+            )
             DBField.contribute_to_class(self, cls, name, *args, **kwargs)
 
         def pre_save(self, model_instance, add):
             """
             Updates the value of the denormalized field before it gets saved.
+
+            Must be idempotent: Django 6.0+ may call pre_save() more than once
+            per save(). We cache the computed value on the model instance to
+            avoid re-evaluating the denorm function within the same save cycle.
+            See: https://code.djangoproject.com/ticket/36855
             """
-            # if not model_instance.pk:
-            #     # Object is not yet created, there is no PK. We are unable to query for
-            #     # the _sets of linked objects or so. We need to return the reasonable default
-            #     return getattr(self, "default")
+            # Cache key unique to this field on this instance for this save cycle.
+            cache_attr = f"_denorm_pre_save_{self.attname}"
+            cached = getattr(model_instance, cache_attr, None)
+            if cached is not None:
+                return cached
 
             value = self.denorm.func(model_instance)
 
-            if hasattr(self, "remote_field") and self.remote_field:  # Django>=1.10
+            if hasattr(self, "remote_field") and self.remote_field:
                 related_field_model = self.remote_field.model
-            elif hasattr(self, "related_field"):  # Django>1.5
+            elif hasattr(self, "related_field"):
                 related_field_model = self.related_field.model
             elif hasattr(self, "related"):
                 try:
@@ -85,10 +108,13 @@ def denormalized(DBField, *args, **kwargs):
             if related_field_model and isinstance(value, related_field_model):
                 setattr(model_instance, self.attname, None)
                 setattr(model_instance, self.name, value)
-                return getattr(model_instance, self.attname)
+                result = getattr(model_instance, self.attname)
             else:
                 setattr(model_instance, self.attname, value)
-                return value
+                result = value
+
+            setattr(model_instance, cache_attr, result)
+            return result
 
         def deconstruct(self):
             name, path, args, kwargs = super().deconstruct()
@@ -164,7 +190,9 @@ class AggregateField(models.PositiveIntegerField):
             value = 0
         else:
             # if we're updating, get the most recent value from the DB
-            value = self.denorm.model.objects.filter(pk=model_instance.pk,).values_list(
+            value = self.denorm.model.objects.filter(
+                pk=model_instance.pk,
+            ).values_list(
                 self.attname,
                 flat=True,
             )[0]
@@ -266,11 +294,24 @@ class CacheKeyField(models.BigIntegerField):
         self.denorm.model = cls
         self.denorm.fieldname = name
         models.signals.class_prepared.connect(self.denorm.setup)
+        models.signals.post_save.connect(
+            _clear_denorm_pre_save_cache,
+            sender=cls,
+            dispatch_uid=f"denorm_clear_pre_save_cache_{cls.__name__}",
+        )
         super().contribute_to_class(cls, name, *args, **kwargs)
 
     def pre_save(self, model_instance, add):
+        # Must be idempotent: Django 6.0+ may call pre_save() multiple times.
+        # See: https://code.djangoproject.com/ticket/36855
+        cache_attr = f"_denorm_pre_save_{self.attname}"
+        cached = getattr(model_instance, cache_attr, None)
+        if cached is not None:
+            return cached
+
         value = self.denorm.func(model_instance)
         setattr(model_instance, self.attname, value)
+        setattr(model_instance, cache_attr, value)
         return value
 
 
