@@ -1,14 +1,43 @@
-*.pyc
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment
+.env
+
+# Testing
+.tox/
+.pytest_cache/
+.coverage
+test_denorm_project/.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
 *.swp
 *.swo
-example.db
 *~
-example/photos
-.idea
-dist
-django_denorm_iplweb.egg-info
-.tox/
-test_denorm_project/.coverage
 \#*
 .#*
-build/
+
+# Distribution
+*.tar.gz
+*.whl
+
+# uv (library — lock file not committed)
+uv.lock
+
+# Project-specific
+example.db
+example/photos
+django_denorm_iplweb.egg-info
