@@ -7,9 +7,26 @@ This is a fork of original package, that went by name of django-denorm_ . This f
 package to the latest Django/Python versions. Also, support for pretty much anything that is not
 PostgreSQL was dropped.
 
-Python versions supported: 3.10-3.13
+Supported versions:
 
-Django versions supported: 4.2 LTS, 5.2 LTS
++----------+------------+------------+
+|          | Django 4.2 | Django 5.2 |
+|          | LTS        | LTS        |
++==========+============+============+
+| Python   | |yes|      | |yes|      |
+| 3.10     |            |            |
++----------+------------+------------+
+| Python   | |yes|      | |yes|      |
+| 3.11     |            |            |
++----------+------------+------------+
+| Python   | |yes|      | |yes|      |
+| 3.12     |            |            |
++----------+------------+------------+
+| Python   | |yes|      | |yes|      |
+| 3.13     |            |            |
++----------+------------+------------+
+
+.. |yes| unicode:: U+2705
 
 Licensed under the BSD 3-Clause license.
 
