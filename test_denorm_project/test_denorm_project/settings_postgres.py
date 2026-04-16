@@ -11,8 +11,9 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": f"denorm_test{DB_SUFFIX}",
-        "HOST": "localhost",
-        "USER": "postgres",
-        "PASSWORD": "",
+        "HOST": os.getenv("DATABASE_HOST", "localhost"),
+        "PORT": os.getenv("DATABASE_PORT", ""),
+        "USER": os.getenv("DATABASE_USER", "postgres"),
+        "PASSWORD": os.getenv("DATABASE_PASSWORD", ""),
     }
 }

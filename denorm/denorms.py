@@ -21,7 +21,7 @@ from django.db.models.manager import Manager
 from django.db.models.query_utils import Q
 from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql.datastructures import Join
-from django.db.models.sql.query import JoinInfo, Query
+from django.db.models.sql.query import Query
 from django.db.models.sql.where import WhereNode
 
 from denorm.contextmanagers import suppress_autotime
@@ -353,15 +353,15 @@ class TriggerFilterQuery(sql.Query):
     def __init__(self, model, trigger_alias, where=TriggerWhereNode):
         super().__init__(model, where)
         self.trigger_alias = trigger_alias
-        try:
 
-            class JoinField:
-                def get_joining_columns(self):
-                    return None
+        class JoinField:
+            def get_joining_columns(self):
+                return None
 
-            join = Join(None, None, None, None, JoinField(), False)
-        except BaseException:
-            join = JoinInfo(None, None, None, None, ((None, None),), False, None)
+            def get_joining_fields(self):
+                return ()
+
+        join = Join(None, None, None, None, JoinField(), False)
         self.alias_map = {trigger_alias: join}
 
     def get_initial_alias(self):
