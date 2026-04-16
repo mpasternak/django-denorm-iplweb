@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-denorm-iplweb"
+version = "1.10.0"
+description = "Denormalization magic for Django"
+readme = "README.rst"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+authors = [{name = "Michal Pasternak", email = "michal.dtz@gmail.com"}]
+dependencies = [
+    "Django>=4.2",
+    "celery",
+    "celery-singleton",
+    "tqdm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/mpasternak/django-denorm-iplweb"
+Issues = "https://github.com/mpasternak/django-denorm-iplweb/issues"
+Documentation = "https://django-denorm-iplweb.readthedocs.io/"
+
+[project.optional-dependencies]
+dev = [
+    "tox",
+    "tox-gh-actions",
+    "coverage",
+    "psycopg2-binary",
+    "pre-commit",
+]
+
+[tool.setuptools.packages.find]
+include = ["denorm*"]
+
+[tool.bumpver]
+current_version = "1.10.0"
+version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
+commit_message = "bump version {old_version} -> {new_version}"
+commit = true
+tag = true
+push = true
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"',
+    'version = "{pep440_version}"',
+]
