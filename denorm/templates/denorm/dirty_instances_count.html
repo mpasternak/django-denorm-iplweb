@@ -1,0 +1,39 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}{% trans "Dirty instances" %}{% endblock %}
+
+{% block branding %}
+  <h1 id="site-name">{% trans "Denorm: dirty instances" %}</h1>
+{% endblock %}
+
+{% block content %}
+  <h1>{% trans "Dirty instances queue" %}</h1>
+
+  {% if rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>{% trans "Model" %}</th>
+          <th>{% trans "Count" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.model }}</td>
+            <td>{{ row.count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th>{% trans "Total" %}</th>
+          <th>{{ total }}</th>
+        </tr>
+      </tfoot>
+    </table>
+  {% else %}
+    <p>{% trans "No dirty instances." %}</p>
+  {% endif %}
+{% endblock %}

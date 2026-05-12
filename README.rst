@@ -46,6 +46,41 @@ Patches welcome!
 .. _django-denorm: https://github.com/django-denorm/django-denorm
 .. _docs: https://django-denorm-iplweb.readthedocs.io/en/latest/history.html#id1
 
+Dirty instances view
+====================
+
+The package ships with an optional view that displays the current number of
+``DirtyInstance`` rows grouped by content type — useful for monitoring the
+denormalization queue from a browser instead of running
+``./manage.py denorm_show_dirtyinstances_count`` over SSH.
+
+Wire it into your project's URLConf::
+
+    # urls.py
+    from django.urls import include, path
+
+    urlpatterns = [
+        ...
+        path("denorm/", include("denorm.urls")),
+    ]
+
+The view is then reachable at ``/denorm/dirty-instances/`` and via
+``reverse("denorm:dirty_instances_count")``.
+
+Access policy is controlled by the ``DENORM_DIRTY_INSTANCES_VIEW_ACCESS``
+setting (default: ``"staff"``):
+
+* ``"staff"`` — only users with ``is_staff=True`` (uses
+  ``staff_member_required``).
+* ``"authenticated"`` — any logged-in user (uses ``login_required``).
+* ``"public"`` — no access control. Only enable this behind your own
+  network-level protection; the page leaks model names from your project.
+
+Example::
+
+    # settings.py
+    DENORM_DIRTY_INSTANCES_VIEW_ACCESS = "authenticated"
+
 Documentation is available from http://django-denorm-iplweb.github.io/django-denorm-iplweb/
 
 Issues can be reported at http://github.com/mpasternak/django-denorm-iplweb/issues
