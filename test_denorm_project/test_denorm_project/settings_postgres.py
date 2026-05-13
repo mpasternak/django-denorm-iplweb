@@ -10,10 +10,10 @@ if TOX_ENVIRONMENT:
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": f"denorm_test{DB_SUFFIX}",
-        "HOST": os.getenv("DATABASE_HOST", "localhost"),
-        "PORT": os.getenv("DATABASE_PORT", ""),
-        "USER": os.getenv("DATABASE_USER", "postgres"),
-        "PASSWORD": os.getenv("DATABASE_PASSWORD", ""),
+        "NAME": os.getenv("DJANGO_DB_NAME", f"denorm_test{DB_SUFFIX}"),
+        "HOST": os.getenv("DJANGO_DB_HOST", os.getenv("DATABASE_HOST", "localhost")),
+        "PORT": os.getenv("DJANGO_DB_PORT", os.getenv("DATABASE_PORT", "")),
+        "USER": os.getenv("DJANGO_DB_USER", os.getenv("DATABASE_USER", "postgres")),
+        "PASSWORD": os.getenv("DJANGO_DB_PASSWORD", os.getenv("DATABASE_PASSWORD", "")),
     }
 }

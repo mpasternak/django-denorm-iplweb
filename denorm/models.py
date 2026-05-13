@@ -38,10 +38,14 @@ class DirtyInstance(models.Model):
 
     def content_object_for_update(self):
         """Returns a self.content_object, only locked for update. Needs
-        to run inside a transaciton."""
+        to run inside a transaction. Uses skip_locked so contending
+        workers don't pile up waiting on the same hot row — they get
+        None back and can try a different row."""
         klass = self.content_type.model_class()
         try:
-            return klass.objects.select_for_update().get(pk=self.object_id)
+            return klass.objects.select_for_update(skip_locked=True).get(
+                pk=self.object_id
+            )
         except klass.DoesNotExist:
             return
 

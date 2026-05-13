@@ -24,7 +24,7 @@ from django.db.models.sql.datastructures import Join
 from django.db.models.sql.query import Query
 from django.db.models.sql.where import WhereNode
 
-from denorm.contextmanagers import suppress_autotime
+from denorm.retry import retry_on_serialization_failure
 
 logger = logging.getLogger(__name__)
 
@@ -738,7 +738,9 @@ def rebuild_instances_of(model, *args, **kwargs):
         batch = list(islice(objs, settings.DENORM_BATCH_SIZE))
         if not batch:
             break
-        DirtyInstance.objects.bulk_create(batch, settings.DENORM_BATCH_SIZE)
+        DirtyInstance.objects.bulk_create(
+            batch, settings.DENORM_BATCH_SIZE, ignore_conflicts=True
+        )
 
 
 def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
@@ -809,6 +811,7 @@ def build_triggerset(using=None):
 INTERACTIVE = False
 
 
+@retry_on_serialization_failure
 def flush_single(content_type_id, object_id, content_type=None):
     from denorm.conf import settings
 
@@ -823,41 +826,43 @@ def flush_single(content_type_id, object_id, content_type=None):
         content_type = ContentType.objects.get(pk=content_type_id)
 
     with transaction.atomic():
-        res = DirtyInstance.objects.filter(
-            content_type_id=content_type.pk, object_id=object_id
-        ).select_for_update(skip_locked=True)
-
-        if not res.exists():
+        # Lock and capture exactly the DirtyInstance PKs we'll process,
+        # so the final DELETE wipes only what we claimed — not rows
+        # inserted by triggers during obj.save() or by concurrent writers.
+        locked_pks = list(
+            DirtyInstance.objects.filter(
+                content_type_id=content_type.pk, object_id=object_id
+            )
+            .select_for_update(skip_locked=True)
+            .values_list("pk", flat=True)
+        )
+        if not locked_pks:
             return
 
         klass = content_type.model_class()
 
-        if klass.objects.filter(pk=object_id).exists():
-            try:
-                obj = klass.objects.select_for_update(
-                    of=("self",), skip_locked=True
-                ).get(pk=object_id)
-            except klass.DoesNotExist:
-                # Locked
-                return
-
-        else:
-            # Truly gone
-            res.delete()
+        try:
+            obj = klass.objects.select_for_update(of=("self",), skip_locked=True).get(
+                pk=object_id
+            )
+        except klass.DoesNotExist:
+            # Either the row is locked by another worker, or it has been
+            # deleted between our DirtyInstance lock and this lookup.
+            # Distinguish: if the row truly doesn't exist, we own the
+            # cleanup; otherwise leave the markers for the next round.
+            if klass.objects.filter(pk=object_id).exists():
+                return  # locked elsewhere; another worker will handle it
+            DirtyInstance.objects.filter(pk__in=locked_pks).delete()
             return
 
-        func_names = set(list(res.values_list("func_name", flat=True)))
+        func_names = set(
+            DirtyInstance.objects.filter(pk__in=locked_pks).values_list(
+                "func_name", flat=True
+            )
+        )
 
-        # At this point, all_func_names contains an iterable with all
-        # func_names attributes requested re-indexing.
         kw = {}
-
-        # If there's a None in it, we might as well save the whole object without any filtering.
-        # If there is no None, we need to take all the functions that need rebuilding and update
-        # but only those parameters.
         if None not in func_names:
-            # If not, we want to pass a list of all updated fields to update_fields,
-            # but first we need to check if they're callable and present on the object.
             update_fields = []
             for func_name in func_names:
                 try:
@@ -865,17 +870,28 @@ def flush_single(content_type_id, object_id, content_type=None):
                     update_fields.append(func_name)
                 except FieldDoesNotExist:
                     continue
-
             if update_fields:
-                kw = dict(update_fields=update_fields)
+                kw["update_fields"] = update_fields
 
-        if disable_autotime_during_flush:
-            with suppress_autotime(obj, autotime_field_names):
-                obj.save(**kw)
-        else:
-            obj.save(**kw)
+        if disable_autotime_during_flush and autotime_field_names:
+            # Build an explicit update_fields that EXCLUDES auto_now fields,
+            # so save() doesn't touch them. This replaces the old
+            # suppress_autotime() approach which mutated class-level
+            # Field.auto_now and leaked across threads.
+            if "update_fields" in kw:
+                kw["update_fields"] = [
+                    f for f in kw["update_fields"] if f not in autotime_field_names
+                ]
+            else:
+                kw["update_fields"] = [
+                    f.name
+                    for f in obj._meta.local_fields
+                    if not f.primary_key and f.name not in autotime_field_names
+                ]
 
-        res.delete()
+        obj.save(**kw)
+
+        DirtyInstance.objects.filter(pk__in=locked_pks).delete()
 
 
 def flush(run_once=False):

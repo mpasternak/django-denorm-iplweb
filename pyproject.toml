@@ -49,6 +49,21 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["denorm*"]
 
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "test_denorm_project.settings_postgres"
+pythonpath = [".", "test_denorm_project"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --tb=short"
+timeout = 90
+timeout_method = "thread"
+
+[tool.pytest-testcontainers-django]
+postgres_image = "postgres:16"
+postgres_user = "postgres"
+postgres_password = "postgres"
+postgres_database = "denorm_test"
+
 [tool.bumpver]
 current_version = "1.10.2"
 version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
@@ -61,4 +76,14 @@ push = true
 "pyproject.toml" = [
     'current_version = "{version}"',
     'version = "{pep440_version}"',
+]
+
+[dependency-groups]
+dev = [
+    "psycopg2-binary>=2.9.11",
+    "pytest>=8.4.2",
+    "pytest-django>=4.12.0",
+    "pytest-testcontainers>=0.1.0",
+    "pytest-testcontainers-django>=0.2.1",
+    "pytest-timeout>=2.4.0",
 ]
