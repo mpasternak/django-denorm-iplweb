@@ -49,6 +49,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["denorm*"]
 
+[tool.setuptools.package-data]
+denorm = ["templates/denorm/*.html"]
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "test_denorm_project.settings_postgres"
 pythonpath = [".", "test_denorm_project"]

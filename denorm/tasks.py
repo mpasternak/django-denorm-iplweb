@@ -1,19 +1,17 @@
 from celery import group, shared_task
 from celery_singleton import Singleton
-from django.db.models import Min
 
 from denorm import denorms
 
 
 @shared_task(base=Singleton, ignore_result=False)
-def flush_single(pk: int):
-    from denorm.models import DirtyInstance
-
-    try:
-        res = DirtyInstance.objects.get(pk=pk)
-    except DirtyInstance.DoesNotExist:
-        return True
-    denorms.flush_single(res.content_type_id, res.object_id, res.content_type)
+def flush_single(content_type_id: int, object_id: int):
+    # Task identity = the logical object being flushed, not an opaque
+    # DirtyInstance pk. denorms.flush_single processes every marker for
+    # the (content_type_id, object_id) pair, so a marker inserted after
+    # the task was enqueued (or after some other path deleted the original
+    # one) is still picked up.
+    denorms.flush_single(content_type_id, object_id)
     return True
 
 
@@ -21,16 +19,13 @@ def flush_single(pk: int):
 def flush_via_queue():
     from denorm.models import DirtyInstance
 
-    # One subtask per distinct (content_type, object_id) — denorms.flush_single
-    # processes ALL DirtyInstance rows for the pair internally, so spawning
-    # one task per duplicate row just thrashes transactions and amplifies
-    # lock contention on denorm_dirtyinstance.
-    pks = list(
-        DirtyInstance.objects.values("content_type_id", "object_id")
-        .annotate(_pk=Min("pk"))
-        .values_list("_pk", flat=True)
+    pairs = list(
+        DirtyInstance.objects.values_list("content_type_id", "object_id").distinct()
     )
 
-    if pks:
-        job = group(flush_single.s(pk=pk) for pk in pks)
+    if pairs:
+        job = group(
+            flush_single.s(content_type_id=ct_id, object_id=obj_id)
+            for ct_id, obj_id in pairs
+        )
         return job.apply_async()

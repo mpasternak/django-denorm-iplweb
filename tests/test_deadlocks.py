@@ -559,15 +559,17 @@ def test_concurrent_rebuild_creates_duplicates(
 def test_flush_via_queue_fans_out_one_task_per_duplicate(
     transactional_db, denorm_triggers
 ):
-    """`flush_via_queue` enqueues one `flush_single(pk=...)` Celery subtask
-    for every DirtyInstance row. With heavy duplicate accumulation
-    (test #6 — 20 updates = 120 rows), 120 tasks are spawned where 1 would
-    do. 119 of them grab nothing via skip_locked, but still take a
-    transaction, contend on the DirtyInstance index, and amplify the
-    deadlock probability seen in test #3.
+    """`flush_via_queue` enqueues one Celery subtask per distinct
+    (content_type_id, object_id) pair — not one per DirtyInstance row.
+    With heavy duplicate accumulation (test #6 — 20 updates = 120 rows),
+    a naive fan-out would spawn 120 tasks where 1 would do. 119 of them
+    would grab nothing via skip_locked, but still take a transaction,
+    contend on the DirtyInstance index, and amplify the deadlock
+    probability seen in test #3.
 
-    EXPECTED TO FAIL: subtask count >= K (number of duplicate rows).
-    After fix: subtask count == number of distinct (CT, object_id).
+    Subtasks are also keyed by the logical (content_type_id, object_id)
+    pair so Singleton dedup survives a representative marker being
+    deleted between enqueue and execution.
     """
     from test_app.models import Forum
 
@@ -588,18 +590,18 @@ def test_flush_via_queue_fans_out_one_task_per_duplicate(
     # fan-out we care about. Bypass the Singleton + Celery broker machinery
     # by calling the wrapped function directly via .run() and stubbing
     # `group` and `flush_single.s` so nothing tries to talk to redis.
-    captured_pks: list[int] = []
+    captured_pairs: list[tuple[int, int]] = []
 
-    def _stub_signature(*, pk):
-        captured_pks.append(pk)
-        return ("signature", pk)
+    def _stub_signature(*, content_type_id, object_id):
+        captured_pairs.append((content_type_id, object_id))
+        return ("signature", content_type_id, object_id)
 
     class _StubGroup:
         def __init__(self, sigs):
             # group() takes a generator of signatures — we must iterate
             # it here so `flush_single.s(...)` actually runs (and our
             # stub captures the call). Otherwise the generator is
-            # discarded unevaluated and captured_pks stays empty.
+            # discarded unevaluated and captured_pairs stays empty.
             self.sigs = list(sigs)
 
         def apply_async(self):
@@ -614,11 +616,84 @@ def test_flush_via_queue_fans_out_one_task_per_duplicate(
     distinct = (
         DirtyInstance.objects.values("content_type_id", "object_id").distinct().count()
     )
-    assert len(captured_pks) == distinct, (
-        f"flush_via_queue dispatched {len(captured_pks)} subtasks for "
+    assert len(captured_pairs) == distinct, (
+        f"flush_via_queue dispatched {len(captured_pairs)} subtasks for "
         f"{distinct} distinct (CT, object_id) pairs. Each duplicate row "
         "causes a redundant task that holds a transaction and contends "
         "on the DirtyInstance index."
+    )
+    assert captured_pairs == [(forum_ct.pk, forum.pk)], (
+        "Subtasks should be keyed by the logical (content_type_id, object_id) "
+        "pair, not by a representative DirtyInstance pk that can disappear "
+        "between enqueue and execution."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9b. flush_single task: representative-pk race regression.
+# ---------------------------------------------------------------------------
+
+
+def test_flush_single_task_processes_markers_inserted_after_enqueue(
+    transactional_db, denorm_triggers
+):
+    """Regression: a marker inserted between enqueue and execution must
+    not be orphaned.
+
+    Before the fix, `flush_via_queue` captured `Min(pk)` of the
+    DirtyInstance rows for each (content_type_id, object_id) pair and
+    enqueued `flush_single(pk=<that_pk>)`. If a concurrent path
+    (synchronous flush via middleware, `denorm_flush`, another worker)
+    processed and deleted that representative marker before the queued
+    task ran, and a trigger then inserted a fresh marker for the same
+    (ct, oid), the queued task aborted on `DoesNotExist` and the new
+    marker stayed dirty until the next `flush_via_queue` cycle.
+
+    After the fix the task is keyed by the logical (ct, oid) pair, so
+    any marker present at execution time is processed.
+    """
+    from test_app.models import Forum
+
+    from denorm import denorms, tasks
+    from denorm.models import DirtyInstance
+
+    forum = Forum.objects.create(title="race")
+    forum_ct = ContentType.objects.get_for_model(Forum)
+    DirtyInstance.objects.all().delete()
+
+    # Stage 1: a marker exists. This is what flush_via_queue's snapshot
+    # would see at enqueue time.
+    initial_marker = DirtyInstance.objects.create(
+        content_type=forum_ct, object_id=forum.pk
+    )
+
+    snapshot = list(
+        DirtyInstance.objects.values_list("content_type_id", "object_id").distinct()
+    )
+    assert snapshot == [(forum_ct.pk, forum.pk)]
+
+    # Stage 2: another path processes and deletes the captured marker
+    # BEFORE our queued task gets to run.
+    denorms.flush_single(forum_ct.pk, forum.pk, forum_ct)
+    assert not DirtyInstance.objects.filter(pk=initial_marker.pk).exists()
+
+    # Stage 3: a fresh marker is inserted for the same (ct, oid) — e.g.,
+    # a trigger firing on a save by another thread.
+    new_marker = DirtyInstance.objects.create(
+        content_type=forum_ct, object_id=forum.pk
+    )
+
+    # Stage 4: the originally-enqueued task finally runs. After the fix
+    # its args are the logical pair, not the now-deleted representative
+    # pk, so it picks up whatever DirtyInstance rows exist for the pair.
+    ct_id, obj_id = snapshot[0]
+    tasks.flush_single.run(content_type_id=ct_id, object_id=obj_id)
+
+    assert not DirtyInstance.objects.filter(pk=new_marker.pk).exists(), (
+        "flush_single task left a DirtyInstance marker orphaned. The task "
+        "is keyed by a representative pk that disappeared between enqueue "
+        "and execution; it should be keyed by the logical "
+        "(content_type_id, object_id) pair instead."
     )
 
 

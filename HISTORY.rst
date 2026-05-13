@@ -1,6 +1,34 @@
 Changelog
 =========
 
+1.11.1
+------
+
+* fix: ``denorm.tasks.flush_single`` is now keyed by the logical
+  ``(content_type_id, object_id)`` pair instead of a representative
+  ``DirtyInstance`` pk. Previously, if the captured marker was deleted
+  by a concurrent flush path between ``flush_via_queue`` enqueue and
+  task execution, and a fresh marker for the same pair was inserted in
+  the meantime, the queued task aborted on ``DoesNotExist`` and the new
+  marker was orphaned until the next flush cycle.
+* fix: ``denorm/templates/denorm/dirty_instances_count.html`` is now
+  included in the built wheel via ``[tool.setuptools.package-data]``.
+  Without it, ``dirty_instances_count`` raised ``TemplateDoesNotExist``
+  for users installing from PyPI.
+* CI: ``tests/test_deadlocks.py`` (deadlock and race-regression suite)
+  is now executed by ``tox`` alongside the existing ``test_app`` suite.
+
+1.11.0
+------
+
+* Fix race conditions and deadlock handling in the flush pipeline
+  (retry on serialization failures, deletion-by-pk after
+  ``select_for_update``, deduplicated subtask fan-out, no global
+  ``Field.auto_now`` mutation during flush).
+* Add ``dirty_instances_count`` view with a configurable access policy
+  (``DENORM_DIRTY_INSTANCES_VIEW_ACCESS`` = ``staff`` / ``authenticated``
+  / ``public``).
+
 1.10.2
 ------
 
