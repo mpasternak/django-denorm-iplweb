@@ -22,12 +22,31 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunSQL(
             sql=(
-                # First, deduplicate any existing rows so the index can be built.
-                "DELETE FROM denorm_dirtyinstance a USING denorm_dirtyinstance b "
-                "WHERE a.id < b.id "
-                "AND a.content_type_id = b.content_type_id "
-                "AND a.object_id IS NOT DISTINCT FROM b.object_id "
-                "AND a.func_name IS NOT DISTINCT FROM b.func_name; "
+                # Deduplicate existing rows in a single pass so the unique
+                # index can be built. The previous approach was a self-join
+                # (DELETE ... USING ... IS NOT DISTINCT FROM) which was
+                # effectively O(n^2): IS NOT DISTINCT FROM cannot drive a
+                # hash/merge join, so Postgres fell back to a nested loop,
+                # and every duplicate group of size k materialised
+                # k*(k-1)/2 row pairs — catastrophic on exactly the runaway
+                # DirtyInstance growth this index exists to fix. row_number()
+                # does the same job in one sort (O(n log n)), keeping the
+                # newest row (highest id) per
+                # (content_type_id, COALESCE(object_id, -1),
+                #  COALESCE(func_name, '')) group.
+                "DELETE FROM denorm_dirtyinstance "
+                "WHERE id IN ("
+                "    SELECT id FROM ("
+                "        SELECT id, row_number() OVER ("
+                "            PARTITION BY content_type_id, "
+                "                         COALESCE(object_id, -1), "
+                "                         COALESCE(func_name, '') "
+                "            ORDER BY id DESC"
+                "        ) AS rn"
+                "        FROM denorm_dirtyinstance"
+                "    ) d"
+                "    WHERE d.rn > 1"
+                "); "
                 # COALESCE on both nullable columns so NULL is treated as
                 # a single value under the unique index (Postgres treats
                 # NULL as distinct otherwise — `null=True` on object_id
