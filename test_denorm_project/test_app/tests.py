@@ -10,8 +10,14 @@ from test_app import models
 
 import denorm
 from denorm import denorms
+from denorm.management.commands.denorm_rebuild import Command as DenormRebuildCommand
 
 User = get_user_model()
+
+
+class TtyStringIO(StringIO):
+    def isatty(self):
+        return True
 
 
 # Use all but denorms in FailingTriggers models by default
@@ -792,6 +798,65 @@ class CommandsTestCase(TransactionTestCase):
     def test_denorm_rebuild(self):
         "Test denorm_init command."
         call_command("denorm_rebuild")
+
+    def test_denorm_rebuild_flush_uses_progress_on_tty(self):
+        command = DenormRebuildCommand()
+        progress_stream = TtyStringIO()
+        command.stderr = progress_stream
+
+        with (
+            patch("denorm.denorms.rebuildall") as rebuildall,
+            patch("denorm.denorms.flush") as flush,
+        ):
+            command.handle(no_flush=False, model_name="Forum", verbosity=1)
+
+        rebuildall.assert_called_once_with(
+            verbose=False,
+            model_name="Forum",
+            flush_=False,
+        )
+        flush.assert_called_once_with(
+            run_once=False,
+            progress=True,
+            progress_stream=progress_stream,
+        )
+
+    def test_denorm_rebuild_flush_uses_no_progress_without_tty(self):
+        command = DenormRebuildCommand()
+        progress_stream = StringIO()
+        command.stderr = progress_stream
+
+        with (
+            patch("denorm.denorms.rebuildall") as rebuildall,
+            patch("denorm.denorms.flush") as flush,
+        ):
+            command.handle(no_flush=False, model_name=None, verbosity=2)
+
+        rebuildall.assert_called_once_with(
+            verbose=True,
+            model_name=None,
+            flush_=False,
+        )
+        flush.assert_called_once_with(
+            run_once=True,
+            progress=False,
+            progress_stream=progress_stream,
+        )
+
+    def test_flush_uses_progress_context_when_requested(self):
+        progress_stream = StringIO()
+
+        with patch("denorm.denorms._DirtyInstanceFlushProgress") as progress:
+            denorm.denorms.flush(
+                progress=True,
+                progress_stream=progress_stream,
+                progress_interval=(1.0, 1.0),
+            )
+
+        progress.assert_called_once_with(
+            stream=progress_stream,
+            interval_range=(1.0, 1.0),
+        )
 
     def test_denorm_sql(self):
         "Test denorm_init command."
