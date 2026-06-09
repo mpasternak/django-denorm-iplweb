@@ -1,5 +1,9 @@
 import abc
 import logging
+import random
+import sys
+import threading
+from contextlib import nullcontext
 from itertools import islice
 
 from django.apps import apps
@@ -14,7 +18,7 @@ except ImportError:
         pass
 
 
-from django.db import connection, connections, transaction
+from django.db import close_old_connections, connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
 from django.db.models.manager import Manager
@@ -811,6 +815,74 @@ def build_triggerset(using=None):
 INTERACTIVE = False
 
 
+class _DirtyInstanceFlushProgress:
+    def __init__(self, stream=None, interval_range=(1.0, 3.0)):
+        self.stream = stream or sys.stderr
+        self.interval_range = interval_range
+        self._bar = None
+        self._thread = None
+        self._stop = threading.Event()
+
+    def __enter__(self):
+        from tqdm import tqdm
+
+        self._bar = tqdm(
+            total=0,
+            desc="denorm_dirtyinstance",
+            unit="row",
+            file=self.stream,
+            leave=True,
+            bar_format="{desc}: {total_fmt} left [{elapsed}]",
+        )
+        self._refresh()
+        self._thread = threading.Thread(
+            target=self._poll,
+            name="denorm-flush-progress",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(self.interval_range) + 0.5)
+        self._refresh()
+        if self._bar is not None:
+            self._bar.close()
+        close_old_connections()
+        return False
+
+    def _poll(self):
+        close_old_connections()
+        try:
+            while not self._stop.wait(random.uniform(*self.interval_range)):
+                self._refresh()
+        finally:
+            close_old_connections()
+
+    def _refresh(self):
+        from .models import DirtyInstance
+
+        close_old_connections()
+        try:
+            remaining = DirtyInstance.objects.count()
+        except Exception:
+            logger.exception("denorm flush progress monitor failed")
+            self._stop.set()
+            return
+
+        self._set_remaining(remaining)
+
+    def _set_remaining(self, remaining):
+        if self._bar is None:
+            return
+
+        self._bar.n = 0
+        self._bar.total = remaining
+        self._bar.refresh()
+
+
 @retry_on_serialization_failure
 def flush_single(content_type_id, object_id, content_type=None):
     from denorm.conf import settings
@@ -894,12 +966,21 @@ def flush_single(content_type_id, object_id, content_type=None):
         DirtyInstance.objects.filter(pk__in=locked_pks).delete()
 
 
-def flush(run_once=False):
+def flush(
+    run_once=False,
+    *,
+    progress=False,
+    progress_stream=None,
+    progress_interval=(1.0, 3.0),
+):
     """
     Updates all model instances marked as dirty by the DirtyInstance
     model.
     After this method finishes the DirtyInstance table is empty and
     all denormalized fields have consistent data.
+
+    If progress is true, a tqdm-style counter periodically queries the
+    DirtyInstance table and displays the current number of rows left.
     """
 
     # Loop until break.
@@ -912,20 +993,30 @@ def flush(run_once=False):
 
     from .models import DirtyInstance
 
-    while True:
-        if run_once and ran_once:
-            break
+    progress_context = (
+        _DirtyInstanceFlushProgress(
+            stream=progress_stream,
+            interval_range=progress_interval,
+        )
+        if progress
+        else nullcontext()
+    )
 
-        processed = 0
-        for content_type_id, object_id in (
-            DirtyInstance.objects.all()
-            .values_list("content_type_id", "object_id")
-            .distinct()
-        ):
-            flush_single(content_type_id, object_id)
-            processed += 1
+    with progress_context:
+        while True:
+            if run_once and ran_once:
+                break
 
-        if not processed:
-            return
+            processed = 0
+            for content_type_id, object_id in (
+                DirtyInstance.objects.all()
+                .values_list("content_type_id", "object_id")
+                .distinct()
+            ):
+                flush_single(content_type_id, object_id)
+                processed += 1
 
-        ran_once = True
+            if not processed:
+                return
+
+            ran_once = True
