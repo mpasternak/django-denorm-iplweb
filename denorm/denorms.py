@@ -5,6 +5,7 @@ import sys
 import threading
 from contextlib import nullcontext
 from itertools import islice
+from types import SimpleNamespace
 
 from django.apps import apps
 from django.contrib import contenttypes
@@ -194,7 +195,7 @@ class BaseCallbackDenorm(Denorm):
 
 class CallbackDenorm(BaseCallbackDenorm):
     """
-    As above, but with extra triggers on self as described below
+    As above, but with extra self-triggers as described below.
     """
 
     def get_triggers(self, using):
@@ -204,35 +205,33 @@ class CallbackDenorm(BaseCallbackDenorm):
             contenttypes.models.ContentType.objects.get_for_model(self.model).pk
         )
 
-        # Create a trigger that marks any updated or newly created
-        # instance of the model containing the denormalized field
-        # as dirty.
-        # This is only really needed if the instance was changed without
-        # using the ORM or if it was part of a bulk update.
-        # In those cases the self_save_handler won't get called by the
-        # pre_save signal, so we need to ensure flush() does this later.
+        # Self-triggers exist because a row may change without the ORM
+        # running pre_save (bulk update, raw SQL). They insert PER-FUNCTION
+        # markers (content_type, object_id, '<func name>'); the library
+        # never emits func_name=NULL itself — NULL is reserved for explicit
+        # whole-object marking (denorm.mark_dirty, rebuild_instances_of)
+        # and takes precedence in flush_single.
         from .db import triggers
+        from .dependencies import DependOnFields, _qv
         from .models import DirtyInstance
 
         action = triggers.TriggerActionInsert(
             model=DirtyInstance,
-            columns=("content_type_id", "object_id"),
+            columns=("content_type_id", "object_id", "func_name"),
             values=(
                 content_type,
                 "NEW.%s" % qn(self.model._meta.pk.get_attname_column()[1]),
+                # _qv: func.__name__ is a Python identifier — safe to inline.
+                _qv(self.func.__name__),
             ),
         )
+
         trigger_list = [
-            triggers.Trigger(
-                self.model,
-                "after",
-                "update",
-                [action],
-                content_type,
-                using,
-                self.skip,
-                self.only,
-            ),
+            # Unconditional INSERT marker for every function (OLD/NEW
+            # comparison is impossible on insert; covers raw-SQL inserts).
+            # NO func argument: all functions of a model share the trigger
+            # name, so TriggerSet merges their actions into one trigger —
+            # safe, because INSERT triggers carry no change-conditions.
             triggers.Trigger(
                 self.model,
                 "after",
@@ -244,6 +243,46 @@ class CallbackDenorm(BaseCallbackDenorm):
                 self.only,
             ),
         ]
+
+        if not any(isinstance(d, DependOnFields) for d in self.depend):
+            # Undeclared function: conservative UPDATE trigger — fires when
+            # any watched column EXCEPT this function's own changes (same
+            # conditions as the old catch-all minus the own column),
+            # addressed to this function. Excluding the own column stops
+            # non-deterministic functions from re-marking themselves forever
+            # (flush writes the column -> trigger would re-fire); undeclared
+            # chains keep working because OTHER functions' columns stay
+            # watched. Consequence: bulk-writing a denormalized column
+            # directly is unsupported (it no longer self-heals).
+            # Declared functions get their targeted UPDATE trigger from
+            # DependOnFields via super().get_triggers().
+            # skip/watch-lists are attname-based (a denormalized FK field
+            # "forum" stores in column "forum_id"), hence get_field().attname.
+            own_attname = self.model._meta.get_field(self.fieldname).attname
+            # The trigger name must NOT collide with the function's
+            # depend_on_related('self') triggers (same table, same event,
+            # same func suffix): TriggerSet.append merges same-named
+            # triggers and keeps the FIRST watch-list — our own-column
+            # exclusion would then silence the dependency's cascade
+            # actions (e.g. tree path / recursive count propagation).
+            # A distinct "_self" suffix keeps them separate.
+            self_trigger_name = SimpleNamespace(
+                __name__=self.func.__name__ + "_self",
+                __qualname__=self.func.__qualname__ + "_self",
+            )
+            trigger_list.append(
+                triggers.Trigger(
+                    self.model,
+                    "after",
+                    "update",
+                    [action],
+                    content_type,
+                    using,
+                    tuple(self.skip or ()) + (own_attname,),
+                    self.only,
+                    self_trigger_name,
+                )
+            )
 
         return trigger_list + super().get_triggers(using=using)
 
@@ -747,6 +786,31 @@ def rebuild_instances_of(model, *args, **kwargs):
         )
 
 
+def mark_dirty(*instances):
+    """Explicitly mark whole objects dirty.
+
+    Creates func_name=NULL markers — the only NULL markers the library
+    produces besides rebuild_instances_of(). NULL means "recompute every
+    denormalized field of this object" and takes precedence over
+    field-level markers in flush_single.
+    """
+    if any(instance.pk is None for instance in instances):
+        raise ValueError("mark_dirty() requires saved instances (pk is None).")
+
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import DirtyInstance
+
+    markers = [
+        DirtyInstance(
+            content_type=ContentType.objects.get_for_model(instance),
+            object_id=instance.pk,
+        )
+        for instance in instances
+    ]
+    DirtyInstance.objects.bulk_create(markers, ignore_conflicts=True)
+
+
 def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
     """
     Updates all models containing denormalized fields.
@@ -883,11 +947,39 @@ class _DirtyInstanceFlushProgress:
         self._bar.refresh()
 
 
+def _claim_and_delete_markers(content_type_id, object_id):
+    """Lock, snapshot and DELETE all claimable markers for the pair.
+
+    Returns (claimed_any, func_names). Deleting at claim time (inside the
+    caller's transaction) frees the unique-index key, so a colliding
+    marker INSERT — from this transaction's own save() triggers or from a
+    concurrent writer — waits for our commit instead of being silently
+    dropped by the unique_violation handler.
+    See docs/spec-concurrency-performance-fixes.md item 1.5.
+    """
+    from .models import DirtyInstance
+
+    locked_pks = list(
+        DirtyInstance.objects.filter(
+            content_type_id=content_type_id, object_id=object_id
+        )
+        .select_for_update(skip_locked=True)
+        .values_list("pk", flat=True)
+    )
+    if not locked_pks:
+        return False, set()
+    func_names = set(
+        DirtyInstance.objects.filter(pk__in=locked_pks).values_list(
+            "func_name", flat=True
+        )
+    )
+    DirtyInstance.objects.filter(pk__in=locked_pks).delete()
+    return True, func_names
+
+
 @retry_on_serialization_failure
 def flush_single(content_type_id, object_id, content_type=None):
     from denorm.conf import settings
-
-    from .models import DirtyInstance
 
     disable_autotime_during_flush = settings.DENORM_DISABLE_AUTOTIME_DURING_FLUSH
     autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
@@ -898,40 +990,32 @@ def flush_single(content_type_id, object_id, content_type=None):
         content_type = ContentType.objects.get(pk=content_type_id)
 
     with transaction.atomic():
-        # Lock and capture exactly the DirtyInstance PKs we'll process,
-        # so the final DELETE wipes only what we claimed — not rows
-        # inserted by triggers during obj.save() or by concurrent writers.
-        locked_pks = list(
-            DirtyInstance.objects.filter(
-                content_type_id=content_type.pk, object_id=object_id
-            )
-            .select_for_update(skip_locked=True)
-            .values_list("pk", flat=True)
-        )
-        if not locked_pks:
-            return
-
         klass = content_type.model_class()
 
+        # Lock the object row before claiming markers; every acquisition
+        # uses skip_locked, so flush workers never wait on each other and
+        # this ordering cannot deadlock flush-vs-flush.
         try:
             obj = klass.objects.select_for_update(of=("self",), skip_locked=True).get(
                 pk=object_id
             )
         except klass.DoesNotExist:
             # Either the row is locked by another worker, or it has been
-            # deleted between our DirtyInstance lock and this lookup.
-            # Distinguish: if the row truly doesn't exist, we own the
-            # cleanup; otherwise leave the markers for the next round.
+            # deleted between marker creation and this lookup. Distinguish:
+            # if the row truly doesn't exist, we own the cleanup; otherwise
+            # leave the markers untouched for whoever holds the lock.
             if klass.objects.filter(pk=object_id).exists():
                 return  # locked elsewhere; another worker will handle it
-            DirtyInstance.objects.filter(pk__in=locked_pks).delete()
+            _claim_and_delete_markers(content_type.pk, object_id)
             return
 
-        func_names = set(
-            DirtyInstance.objects.filter(pk__in=locked_pks).values_list(
-                "func_name", flat=True
-            )
-        )
+        # Claim AND DELETE the markers now, before save(): while a claimed
+        # marker still exists, the unique index silently swallows identical
+        # marker inserts (our own save's triggers, concurrent writers),
+        # losing invalidations.
+        claimed, func_names = _claim_and_delete_markers(content_type.pk, object_id)
+        if not claimed:
+            return
 
         kw = {}
         if None not in func_names:
@@ -963,8 +1047,6 @@ def flush_single(content_type_id, object_id, content_type=None):
 
         obj.save(**kw)
 
-        DirtyInstance.objects.filter(pk__in=locked_pks).delete()
-
 
 def flush(
     run_once=False,
@@ -991,6 +1073,8 @@ def flush(
 
     ran_once = False
 
+    from denorm.conf import settings
+
     from .models import DirtyInstance
 
     progress_context = (
@@ -1003,9 +1087,36 @@ def flush(
     )
 
     with progress_context:
+        passes = 0
         while True:
             if run_once and ran_once:
                 break
+
+            if passes >= settings.DENORM_MAX_FLUSH_PASSES:
+                remaining = list(
+                    DirtyInstance.objects.values_list(
+                        "content_type_id", flat=True
+                    ).distinct()
+                )
+                if not remaining:
+                    # Converged exactly on the final allowed pass.
+                    return
+                from django.contrib.contenttypes.models import ContentType
+
+                remaining_labels = sorted(
+                    f"{ct.app_label}.{ct.model}"
+                    for ct in ContentType.objects.filter(pk__in=remaining)
+                )
+                logger.error(
+                    "denorm.flush: aborting after %d passes; still-dirty "
+                    "models=%s. A denormalized function is likely "
+                    "non-deterministic (returns a different value on every "
+                    "recompute), so flushing can never converge.",
+                    passes,
+                    remaining_labels,
+                )
+                return
+            passes += 1
 
             processed = 0
             for content_type_id, object_id in (

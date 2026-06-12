@@ -9,7 +9,7 @@ except ImportError:
 from django.contrib import contenttypes
 from django.core.cache import cache
 
-from denorm import CacheKeyField, CountField, cached, denormalized, depend_on_related
+from denorm import CacheKeyField, CountField, cached, denormalized, depend_on_fields, depend_on_related
 from denorm.fields import SumField
 
 settings.DENORM_MODEL = "test_app.RealDenormModel"
@@ -333,3 +333,52 @@ if connection.vendor != "sqlite":
         )
         active = models.BooleanField(default=False)
         text = models.CharField(max_length=10, default="")
+
+
+class Profile(models.Model):
+    """@depend_on_fields feature model: declared deps + denorm->denorm chain."""
+
+    first_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50)
+    nickname = models.CharField(max_length=50, default="")
+
+    @denormalized(models.CharField, max_length=101)
+    @depend_on_fields("first_name", "last_name")
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}"
+
+    @denormalized(models.CharField, max_length=120)
+    @depend_on_fields("full_name")
+    def letterhead(self):
+        return f"Dear {self.full_name}"
+
+
+class ProfileReversed(models.Model):
+    """Same as Profile but with the chained field DECLARED FIRST — the
+    declaration-order-sensitivity case that the catch-all NULL design got
+    wrong (stale letterhead) and per-function markers must get right."""
+
+    first_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50)
+
+    @denormalized(models.CharField, max_length=120)
+    @depend_on_fields("full_name")
+    def letterhead(self):
+        return f"Dear {self.full_name}"
+
+    @denormalized(models.CharField, max_length=101)
+    @depend_on_fields("first_name", "last_name")
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}"
+
+
+class UndeclaredProfile(models.Model):
+    """No declarations: must get the conservative per-function trigger
+    (today's catch-all semantics, addressed to the function)."""
+
+    first_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50)
+
+    @denormalized(models.CharField, max_length=101)
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}"

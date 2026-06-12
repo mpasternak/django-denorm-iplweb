@@ -1122,3 +1122,166 @@ def test_denorm_queue_survives_listen_connection_drop(
     # After fix: thread is still alive and re-LISTENing. We do NOT assert
     # that a fresh NOTIFY is actually processed here (that requires
     # cross-thread Celery hooks beyond the scope of this minimal check).
+
+
+# ---------------------------------------------------------------------------
+# 16. Item 1.5: claimed markers must be deleted at claim time, not commit.
+# See docs/spec-concurrency-performance-fixes.md item 1.5.
+# ---------------------------------------------------------------------------
+
+
+def test_flush_single_deletes_claimed_markers_before_save(
+    transactional_db, denorm_triggers
+):
+    """The unique-index dedup silently drops marker INSERTs that collide
+    with a row that already exists. flush_single keeps its claimed markers
+    alive until the end of its transaction, so any identical marker
+    inserted while it works (by its own save's triggers, or by a
+    concurrent writer) is swallowed and the invalidation is lost.
+
+    Fix: flush_single deletes the claimed rows immediately after claiming
+    them (inside the transaction). This test pins the observable core of
+    the fix: by the time obj.save() runs, the claimed markers are gone.
+    """
+    from test_app.models import Forum
+
+    from denorm import denorms
+    from denorm.models import DirtyInstance
+
+    forum = Forum.objects.create(title="claim-time")
+    forum_ct = ContentType.objects.get_for_model(Forum)
+    DirtyInstance.objects.all().delete()
+    marker = DirtyInstance.objects.create(content_type=forum_ct, object_id=forum.pk)
+
+    seen = {}
+    orig_save = Forum.save
+
+    def spying_save(self, *args, **kwargs):
+        seen["markers_at_save_time"] = DirtyInstance.objects.filter(
+            content_type=forum_ct, object_id=self.pk
+        ).count()
+        return orig_save(self, *args, **kwargs)
+
+    with patch.object(Forum, "save", spying_save):
+        denorms.flush_single(forum_ct.pk, forum.pk, forum_ct)
+
+    assert seen["markers_at_save_time"] == 0, (
+        "flush_single ran obj.save() while its claimed DirtyInstance rows "
+        "still existed. While they exist, the unique index silently drops "
+        "any identical marker inserted by this save's own triggers or by "
+        "concurrent writers — losing invalidations. Claimed markers must "
+        "be deleted at claim time (audit spec item 1.5)."
+    )
+    # After the fix, the save's own triggers may legitimately insert
+    # FOLLOW-UP markers for the same object (that is desired spec
+    # behavior); only the claimed row itself must be gone.
+    assert not DirtyInstance.objects.filter(pk=marker.pk).exists()
+
+
+def test_concurrent_marker_survives_inflight_flush(
+    transactional_db, denorm_triggers
+):
+    """Swallow race, end to end, via Post.response_count.
+
+    Scenario: a parent Post and a child Post (response_to=parent). The
+    flush worker claims marker (ct_post, parent.pk, 'response_count') and
+    runs flush_single(parent) — locking the PARENT row only. While the
+    flush is inside parent.save(), a concurrent writer UPDATEs the CHILD
+    post; the `response_count` backward-dependency trigger inserts the
+    same logical marker (ct_post, parent.pk, 'response_count'), colliding
+    with the claimed one.
+
+    Before the fix: the claimed row still exists -> unique_violation ->
+    trigger handler swallows the insert -> flush deletes its claimed rows
+    and commits -> the writer's invalidation is GONE (and this flush may
+    have recomputed BEFORE the writer committed).
+
+    After the fix: the claimed row is already deleted (uncommitted) ->
+    the writer's insert waits for our commit -> lands AFTER it -> a fresh
+    marker survives for the next round.
+
+    Why Post.response_count and not Forum.author_names: a write to a Post
+    that belongs to a Forum fires Forum's CountField/CacheKeyField
+    triggers, which UPDATE the forum row — the very row flush_single has
+    locked (directly, or via its own save's triggers). The writer would
+    block on that row lock until the flush commits, serializing the two
+    transactions and hiding the swallow. With response_count, the flush
+    locks only the parent POST row; the writer touches the CHILD row, so
+    its marker INSERT is the only point of contact. Ideally both posts
+    would have forum=None, but Post.forum_title (`self.forum.title`)
+    crashes on a null forum — so each post gets its OWN forum instead:
+    the flush's triggers touch parent's forum, the writer's touch
+    child's forum, and no Forum row is shared between the two
+    transactions.
+    """
+    from django.db import connections
+
+    from test_app.models import Forum, Post
+
+    from denorm import denorms
+    from denorm.models import DirtyInstance
+
+    forum_a = Forum.objects.create(title="forum-a")
+    forum_b = Forum.objects.create(title="forum-b")
+    parent = Post.objects.create(forum=forum_a, title="parent")
+    child = Post.objects.create(forum=forum_b, title="child", response_to=parent)
+    # Settle setup markers by explicit delete (same approach as the test
+    # above): flush() on freshly-created objects can loop on
+    # always-changing columns once the claim-time-delete fix lands.
+    DirtyInstance.objects.all().delete()
+    assert not DirtyInstance.objects.exists()
+
+    # Stage 1: one claimed-to-be marker for (parent, 'response_count').
+    post_ct = ContentType.objects.get_for_model(Post)
+    DirtyInstance.objects.create(
+        content_type=post_ct, object_id=parent.pk, func_name="response_count"
+    )
+
+    writer_done = threading.Event()
+
+    def concurrent_writer():
+        # Own thread = own Django connection (autocommit). Updating the
+        # CHILD row fires the response_count backward-dependency trigger,
+        # inserting (ct_post, parent.pk, 'response_count') — colliding
+        # with the marker the flush worker claimed.
+        try:
+            Post.objects.filter(pk=child.pk).update(title="changed-mid-flush")
+            writer_done.set()
+        finally:
+            for alias in connections:
+                try:
+                    connections[alias].close()
+                except Exception:
+                    pass
+
+    writer = threading.Thread(target=concurrent_writer, daemon=True)
+
+    orig_save = Post.save
+
+    def save_with_concurrent_write(self, *args, **kwargs):
+        # flush_single is wrapped in retry_on_serialization_failure; on a
+        # retried call the thread is already started ("threads can only
+        # be started once"), so only start it on the first entry.
+        if writer.ident is None:
+            writer.start()
+        # Give the writer time to reach the marker INSERT. Before the
+        # fix it completes instantly (insert swallowed). After the fix
+        # it blocks on our uncommitted delete until we commit.
+        time.sleep(1.0)
+        return orig_save(self, *args, **kwargs)
+
+    with patch.object(Post, "save", save_with_concurrent_write):
+        denorms.flush_single(post_ct.pk, parent.pk, post_ct)
+
+    writer.join(timeout=30)
+    assert writer_done.is_set(), "concurrent writer never finished — hung lock?"
+
+    assert DirtyInstance.objects.filter(
+        content_type=post_ct, object_id=parent.pk, func_name="response_count"
+    ).exists(), (
+        "The concurrent writer's invalidation marker was swallowed by the "
+        "unique-index dedup while flush_single held an identical claimed "
+        "marker. The denormalized value is now silently stale. Claimed "
+        "markers must be deleted at claim time so colliding inserts wait "
+        "for our commit instead of being dropped (audit spec item 1.5)."
+    )
