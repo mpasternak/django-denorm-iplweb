@@ -1,7 +1,7 @@
 from django.db import transaction
 from django.db.backends.utils import truncate_name
 
-from denorm.db import base, const
+from denorm.db import base
 
 
 class RandomBigInt(base.RandomBigInt):
@@ -32,14 +32,11 @@ class TriggerActionInsert(base.TriggerActionInsert):
         else:
             values = "VALUES (" + ", ".join(self.values) + ")"
 
-        denorm_queue_name = const.DENORM_QUEUE_NAME
-        sql = (
-            "BEGIN\n"
-            "    INSERT INTO %(table)s %(columns)s %(values)s;\n"
-            "EXCEPTION WHEN unique_violation THEN\n"
-            "    -- do nothing\n"
-            "END"
-        ) % locals()
+        # Bare ON CONFLICT DO NOTHING (no conflict target): catches any
+        # unique violation without naming the 0017 expression index, and —
+        # unlike the old EXCEPTION WHEN unique_violation block — opens no
+        # subtransaction per row (pg_subtrans SLRU contention under load).
+        sql = "INSERT INTO %(table)s %(columns)s %(values)s ON CONFLICT DO NOTHING" % locals()
         return sql, params
 
 

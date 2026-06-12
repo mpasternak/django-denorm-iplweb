@@ -382,6 +382,26 @@ class TestTriggerSetShape:
                         "markers only."
                     )
 
+    def test_marker_inserts_use_on_conflict_not_subtransaction(self, db):
+        """A plpgsql EXCEPTION block opens a subtransaction on EVERY
+        execution — a known Postgres scalability cliff (pg_subtrans SLRU)
+        on hot write paths. Bare ON CONFLICT DO NOTHING has identical
+        dedup semantics with no subtransaction (spec 2.1)."""
+        from denorm.denorms import build_triggerset
+        from denorm.models import DirtyInstance
+
+        ts = build_triggerset()
+        table = DirtyInstance._meta.db_table
+        checked = 0
+        for trigger in ts.triggers.values():
+            for action in trigger.actions:
+                sql, _ = action.sql()
+                if table in sql and "INSERT" in sql.upper():
+                    checked += 1
+                    assert "ON CONFLICT DO NOTHING" in sql
+                    assert "EXCEPTION" not in sql.upper()
+        assert checked > 0
+
 
 class TestMarkDirtyAndNullContract:
     def test_mark_dirty_emits_null_marker_and_flush_full_saves(
