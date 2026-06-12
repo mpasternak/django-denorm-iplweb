@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
 from django.contrib import contenttypes
+from django.core.exceptions import FieldDoesNotExist
 from django.db import connection, connections, models
 from django.db.models.fields import related
 
 import denorm
 from denorm.helpers import find_fks, find_m2ms, remote_field_model
+
+
+def _qv(value):
+    # As long as `value` is function.__name__ (a Python identifier) this is
+    # safe to inline into trigger SQL. Anything else would be SQL injection.
+    return f"'{value}'"
 
 
 class DenormDependency(object):
@@ -448,13 +455,6 @@ class CallbackDependOnRelated(DependOnRelated):
 
         qn = self.get_quote_name(using)
 
-        def qv(value):
-            return (
-                f"'{value}'"  # as long as this is function.__name__, we should be OK.
-            )
-
-        # as soon, as it is something else, this could be SQL injection.
-
         if not self.type:
             # 'resolved_model' model never got called...
             raise ValueError(
@@ -480,7 +480,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     (
                         content_type,
                         self.this_model._meta.pk.get_attname_column()[1],
-                        qv(self.func.__name__),
+                        _qv(self.func.__name__),
                     ),
                     **{
                         self.field.get_attname_column()[1]: "NEW.%s"
@@ -496,7 +496,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     (
                         content_type,
                         self.this_model._meta.pk.get_attname_column()[1],
-                        qv(self.func.__name__),
+                        _qv(self.func.__name__),
                     ),
                     **{
                         self.field.get_attname_column()[1]: "OLD.%s"
@@ -554,7 +554,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     (
                         content_type,
                         self.field.get_attname_column()[1],
-                        qv(self.func.__name__),
+                        _qv(self.func.__name__),
                     ),
                     **{
                         self.field.model._meta.pk.get_attname_column()[1]: "NEW.%s"
@@ -568,7 +568,7 @@ class CallbackDependOnRelated(DependOnRelated):
                 values=(
                     content_type,
                     "OLD.%s" % self.field.get_attname_column()[1],
-                    qv(self.func.__name__),
+                    _qv(self.func.__name__),
                 ),
             )
             return [
@@ -631,12 +631,12 @@ class CallbackDependOnRelated(DependOnRelated):
             action_m2m_new = triggers.TriggerActionInsert(
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
-                values=(content_type, "NEW.%s" % column_name, qv(self.func.__name__)),
+                values=(content_type, "NEW.%s" % column_name, _qv(self.func.__name__)),
             )
             action_m2m_old = triggers.TriggerActionInsert(
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
-                values=(content_type, "OLD.%s" % column_name, qv(self.func.__name__)),
+                values=(content_type, "OLD.%s" % column_name, _qv(self.func.__name__)),
             )
 
             trigger_list = [
@@ -689,7 +689,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     columns=("content_type_id", "object_id", "func_name"),
                     values=triggers.TriggerNestedSelect(
                         self.field.m2m_db_table(),
-                        (content_type, column_name, qv(self.func.__name__)),
+                        (content_type, column_name, _qv(self.func.__name__)),
                         **{
                             reverse_column_name: "NEW.%s"
                             % qn(self.other_model._meta.pk.get_attname_column()[1])
@@ -713,6 +713,100 @@ class CallbackDependOnRelated(DependOnRelated):
             return trigger_list
 
         return []
+
+
+class DependOnFields(DenormDependency):
+    """Same-model dependency: the decorated function reads the declared
+    sibling columns of its own model instance (plain columns or other
+    denormalized fields).
+
+    Emits one targeted AFTER UPDATE trigger that fires only when a
+    declared column changes, inserting a per-function dirty marker
+    (content_type_id, object_id, '<function name>').
+
+    An EMPTY declaration (``@depend_on_fields()``) means "this function
+    reads no sibling columns" and emits no UPDATE trigger at all.
+    The unconditional INSERT marker is emitted by CallbackDenorm for
+    every function regardless of declarations.
+    """
+
+    def __init__(self, *field_names, func=None):
+        self.field_names = tuple(field_names)
+        self.func = func
+
+    def resolve_attnames(self):
+        """Map declared names (field name or attname) to column attnames.
+
+        Raises FieldDoesNotExist for unknown names, ValueError for a
+        self-dependency on the function's own field.
+        """
+        concrete = list(self.this_model._meta.concrete_fields)
+        by_either_name = {}
+        for f in concrete:
+            by_either_name[f.name] = f.attname
+            by_either_name[f.attname] = f.attname
+
+        own = self.func.__name__
+        resolved = []
+        for name in self.field_names:
+            if name == own:
+                raise ValueError(
+                    f"@depend_on_fields on {self.this_model.__name__}.{own} "
+                    f'declares its own field "{name}" — a denormalized '
+                    f"function cannot depend on itself."
+                )
+            try:
+                resolved.append(by_either_name[name])
+            except KeyError:
+                available = ", ".join(sorted({f.attname for f in concrete}))
+                raise FieldDoesNotExist(
+                    f'Field name "{name}", declared in @depend_on_fields of '
+                    f"{self.this_model.__name__}.{own}, does not exist. "
+                    f"Field names available: {available}"
+                )
+        # Deduplicate while preserving declaration order so that e.g.
+        # @depend_on_fields("author", "author_id") doesn't produce a
+        # duplicated trigger condition for the same attname "author_id".
+        return list(dict.fromkeys(resolved))
+
+    def get_triggers(self, using):
+        if not self.field_names:
+            return []
+
+        from denorm.db import triggers
+
+        attnames = self.resolve_attnames()
+        qn = self.get_quote_name(using)
+        content_type = str(
+            contenttypes.models.ContentType.objects.get_for_model(self.this_model).pk
+        )
+        action = triggers.TriggerActionInsert(
+            model=denorm.models.DirtyInstance,
+            columns=("content_type_id", "object_id", "func_name"),
+            values=(
+                content_type,
+                "NEW.%s" % qn(self.this_model._meta.pk.get_attname_column()[1]),
+                _qv(self.func.__name__),
+            ),
+        )
+        # Note: Trigger.__init__ also merges the model's denorm_always_skip /
+        # denorm_always_only into the watch-list.  If those model-level
+        # settings exclude every column declared here, Trigger raises
+        # ImproperlyConfigured (whose message does not mention
+        # denorm_always_skip — this comment is the breadcrumb).
+        return [
+            triggers.Trigger(
+                self.this_model,
+                "after",
+                "update",
+                [action],
+                content_type,
+                using,
+                None,
+                tuple(attnames),
+                self.func,
+            )
+        ]
 
 
 def make_depend_decorator(Class):
@@ -745,3 +839,4 @@ def make_depend_decorator(Class):
 
 
 depend_on_related = make_depend_decorator(CallbackDependOnRelated)
+depend_on_fields = make_depend_decorator(DependOnFields)

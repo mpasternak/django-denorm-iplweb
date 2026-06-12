@@ -1,7 +1,7 @@
 from django.conf import settings
 
 from .denorms import flush, rebuildall
-from .dependencies import depend_on_related
+from .dependencies import depend_on_fields, depend_on_related
 from .fields import CacheKeyField, CountField, cached, denormalized
 from .retry import retry_on_serialization_failure
 
@@ -27,6 +27,7 @@ if (
 __all__ = [
     "cached",
     "denormalized",
+    "depend_on_fields",
     "depend_on_related",
     "flush",
     "rebuildall",
