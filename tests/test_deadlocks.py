@@ -552,28 +552,32 @@ def test_concurrent_rebuild_creates_duplicates(
 
 
 # ---------------------------------------------------------------------------
-# 9. flush_via_queue fan-out: one Celery task per DirtyInstance row.
+# 9. flush_via_queue fan-out: distinct pairs dispatched in chunks via flush_batch.
 # ---------------------------------------------------------------------------
 
 
 def test_flush_via_queue_fans_out_one_task_per_duplicate(
     transactional_db, denorm_triggers
 ):
-    """`flush_via_queue` enqueues one Celery subtask per distinct
-    (content_type_id, object_id) pair — not one per DirtyInstance row.
+    """`flush_via_queue` dispatches distinct (content_type_id, object_id)
+    pairs in chunks of DENORM_QUEUE_CHUNK_SIZE via `flush_batch` tasks —
+    not one task per DirtyInstance row and not one task per distinct pair.
+
     With heavy duplicate accumulation (test #6 — 20 updates = 120 rows),
     a naive fan-out would spawn 120 tasks where 1 would do. 119 of them
     would grab nothing via skip_locked, but still take a transaction,
     contend on the DirtyInstance index, and amplify the deadlock
     probability seen in test #3.
 
-    Subtasks are also keyed by the logical (content_type_id, object_id)
-    pair so Singleton dedup survives a representative marker being
-    deleted between enqueue and execution.
+    Chunking limits broker message count for very large backlogs: a
+    500k-row backlog with chunk_size=50 becomes 10k messages, not 500k.
+
+    Duplicates must collapse to exactly ONE pair in the dispatched chunks.
     """
     from test_app.models import Forum
 
     from denorm import tasks
+    from denorm.conf import settings as denorm_settings
     from denorm.models import DirtyInstance
 
     forum = Forum.objects.create(title="dup")
@@ -586,46 +590,47 @@ def test_flush_via_queue_fans_out_one_task_per_duplicate(
         ignore_conflicts=True,
     )
 
-    # Capture the signatures handed to celery.group(...) — that's the
+    # Capture the chunk lists handed to flush_batch.s(...) — that's the
     # fan-out we care about. Bypass the Singleton + Celery broker machinery
     # by calling the wrapped function directly via .run() and stubbing
-    # `group` and `flush_single.s` so nothing tries to talk to redis.
-    captured_pairs: list[tuple[int, int]] = []
+    # `group` and `flush_batch.s` so nothing tries to talk to redis.
+    captured_chunks: list[list] = []
 
-    def _stub_signature(*, content_type_id, object_id):
-        captured_pairs.append((content_type_id, object_id))
-        return ("signature", content_type_id, object_id)
+    def _stub_signature(*, pairs):
+        captured_chunks.append(list(pairs))
+        return ("signature", pairs)
 
     class _StubGroup:
         def __init__(self, sigs):
             # group() takes a generator of signatures — we must iterate
-            # it here so `flush_single.s(...)` actually runs (and our
+            # it here so `flush_batch.s(...)` actually runs (and our
             # stub captures the call). Otherwise the generator is
-            # discarded unevaluated and captured_pairs stays empty.
+            # discarded unevaluated and captured_chunks stays empty.
             self.sigs = list(sigs)
 
         def apply_async(self):
             return None
 
     with (
-        patch.object(tasks.flush_single, "s", side_effect=_stub_signature),
+        patch.object(tasks.flush_batch, "s", side_effect=_stub_signature),
         patch("denorm.tasks.group", _StubGroup),
     ):
         tasks.flush_via_queue.run()
 
-    distinct = (
-        DirtyInstance.objects.values("content_type_id", "object_id").distinct().count()
+    # all distinct pairs are covered exactly once, in ceil(n/chunk) batches
+    flat = [pair for chunk in captured_chunks for pair in chunk]
+    distinct = list(
+        DirtyInstance.objects.values_list("content_type_id", "object_id").distinct()
     )
-    assert len(captured_pairs) == distinct, (
-        f"flush_via_queue dispatched {len(captured_pairs)} subtasks for "
-        f"{distinct} distinct (CT, object_id) pairs. Each duplicate row "
-        "causes a redundant task that holds a transaction and contends "
-        "on the DirtyInstance index."
+    assert sorted(flat) == sorted(distinct), (
+        f"flush_via_queue dispatched {flat!r} but expected distinct pairs {distinct!r}. "
+        "Duplicate DirtyInstance rows must collapse to ONE pair total."
     )
-    assert captured_pairs == [(forum_ct.pk, forum.pk)], (
-        "Subtasks should be keyed by the logical (content_type_id, object_id) "
-        "pair, not by a representative DirtyInstance pk that can disappear "
-        "between enqueue and execution."
+    assert all(
+        len(c) <= denorm_settings.DENORM_QUEUE_CHUNK_SIZE for c in captured_chunks
+    ), (
+        f"Some chunk exceeds DENORM_QUEUE_CHUNK_SIZE={denorm_settings.DENORM_QUEUE_CHUNK_SIZE}: "
+        f"{[len(c) for c in captured_chunks]}"
     )
 
 

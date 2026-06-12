@@ -24,3 +24,6 @@ DENORM_DIRTY_INSTANCES_VIEW_ACCESS = getattr(
 # a SIGKILLed worker leaves its lock forever and the affected object can
 # never be enqueued again.
 DENORM_SINGLETON_LOCK_EXPIRY = getattr(settings, "DENORM_SINGLETON_LOCK_EXPIRY", 600)
+
+# Number of (content_type_id, object_id) pairs handled by one celery task.
+DENORM_QUEUE_CHUNK_SIZE = getattr(settings, "DENORM_QUEUE_CHUNK_SIZE", 50)
