@@ -205,7 +205,12 @@ class Trigger(object):
             raise NotImplementedError
 
         if skip and fields_with_model:
-            field_names = [k.attname for k, v in fields_with_model]
+            # Reverse relations (e.g. OneToOneRel) carry no attname and are
+            # never watchable columns — exclude them from the validation
+            # universe, just like the watch-list construction above does.
+            field_names = [
+                k.attname for k, v in fields_with_model if hasattr(k, "attname")
+            ]
             # Check all fields given as a parameter to skip or denorm_always_skip
             # to see if they exist:
             for field_name in skip:

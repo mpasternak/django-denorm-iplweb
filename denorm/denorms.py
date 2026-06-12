@@ -5,6 +5,7 @@ import sys
 import threading
 from contextlib import nullcontext
 from itertools import islice
+from types import SimpleNamespace
 
 from django.apps import apps
 from django.contrib import contenttypes
@@ -194,7 +195,7 @@ class BaseCallbackDenorm(Denorm):
 
 class CallbackDenorm(BaseCallbackDenorm):
     """
-    As above, but with extra triggers on self as described below
+    As above, but with extra self-triggers as described below.
     """
 
     def get_triggers(self, using):
@@ -204,35 +205,33 @@ class CallbackDenorm(BaseCallbackDenorm):
             contenttypes.models.ContentType.objects.get_for_model(self.model).pk
         )
 
-        # Create a trigger that marks any updated or newly created
-        # instance of the model containing the denormalized field
-        # as dirty.
-        # This is only really needed if the instance was changed without
-        # using the ORM or if it was part of a bulk update.
-        # In those cases the self_save_handler won't get called by the
-        # pre_save signal, so we need to ensure flush() does this later.
+        # Self-triggers exist because a row may change without the ORM
+        # running pre_save (bulk update, raw SQL). They insert PER-FUNCTION
+        # markers (content_type, object_id, '<func name>'); the library
+        # never emits func_name=NULL itself — NULL is reserved for explicit
+        # whole-object marking (denorm.mark_dirty, rebuild_instances_of)
+        # and takes precedence in flush_single.
         from .db import triggers
+        from .dependencies import DependOnFields, _qv
         from .models import DirtyInstance
 
         action = triggers.TriggerActionInsert(
             model=DirtyInstance,
-            columns=("content_type_id", "object_id"),
+            columns=("content_type_id", "object_id", "func_name"),
             values=(
                 content_type,
                 "NEW.%s" % qn(self.model._meta.pk.get_attname_column()[1]),
+                # _qv: func.__name__ is a Python identifier — safe to inline.
+                _qv(self.func.__name__),
             ),
         )
+
         trigger_list = [
-            triggers.Trigger(
-                self.model,
-                "after",
-                "update",
-                [action],
-                content_type,
-                using,
-                self.skip,
-                self.only,
-            ),
+            # Unconditional INSERT marker for every function (OLD/NEW
+            # comparison is impossible on insert; covers raw-SQL inserts).
+            # NO func argument: all functions of a model share the trigger
+            # name, so TriggerSet merges their actions into one trigger —
+            # safe, because INSERT triggers carry no change-conditions.
             triggers.Trigger(
                 self.model,
                 "after",
@@ -244,6 +243,46 @@ class CallbackDenorm(BaseCallbackDenorm):
                 self.only,
             ),
         ]
+
+        if not any(isinstance(d, DependOnFields) for d in self.depend):
+            # Undeclared function: conservative UPDATE trigger — fires when
+            # any watched column EXCEPT this function's own changes (same
+            # conditions as the old catch-all minus the own column),
+            # addressed to this function. Excluding the own column stops
+            # non-deterministic functions from re-marking themselves forever
+            # (flush writes the column -> trigger would re-fire); undeclared
+            # chains keep working because OTHER functions' columns stay
+            # watched. Consequence: bulk-writing a denormalized column
+            # directly is unsupported (it no longer self-heals).
+            # Declared functions get their targeted UPDATE trigger from
+            # DependOnFields via super().get_triggers().
+            # skip/watch-lists are attname-based (a denormalized FK field
+            # "forum" stores in column "forum_id"), hence get_field().attname.
+            own_attname = self.model._meta.get_field(self.fieldname).attname
+            # The trigger name must NOT collide with the function's
+            # depend_on_related('self') triggers (same table, same event,
+            # same func suffix): TriggerSet.append merges same-named
+            # triggers and keeps the FIRST watch-list — our own-column
+            # exclusion would then silence the dependency's cascade
+            # actions (e.g. tree path / recursive count propagation).
+            # A distinct "_self" suffix keeps them separate.
+            self_trigger_name = SimpleNamespace(
+                __name__=self.func.__name__ + "_self",
+                __qualname__=self.func.__qualname__ + "_self",
+            )
+            trigger_list.append(
+                triggers.Trigger(
+                    self.model,
+                    "after",
+                    "update",
+                    [action],
+                    content_type,
+                    using,
+                    tuple(self.skip or ()) + (own_attname,),
+                    self.only,
+                    self_trigger_name,
+                )
+            )
 
         return trigger_list + super().get_triggers(using=using)
 
