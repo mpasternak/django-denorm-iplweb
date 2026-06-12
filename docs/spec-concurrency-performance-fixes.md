@@ -12,7 +12,7 @@ shippable; within a phase, items are independent unless noted.
 
 ## Phase 1 — reliability bugs (silent failures)
 
-### 1.1 `denorm_queue` leaks memory: NOTIFY payloads never drained
+### ✅ SHIPPED (1.12.0) — 1.1 `denorm_queue` leaks memory: NOTIFY payloads never drained
 
 **Problem.** `denorm/management/commands/denorm_queue.py` calls
 `pg_con.poll()` after `select()`, which makes psycopg2 append every received
@@ -37,7 +37,7 @@ loop, assert `pg_con.notifies` is empty afterwards.
 
 **Risk.** None.
 
-### 1.2 `denorm_queue` ignores pre-existing backlog on startup/reconnect
+### ✅ SHIPPED (1.12.0) — 1.2 `denorm_queue` ignores pre-existing backlog on startup/reconnect
 
 **Problem.** After `LISTEN` is established, `_listen_loop` blocks in
 `select()` until a *new* NOTIFY arrives. PostgreSQL does not queue
@@ -58,7 +58,7 @@ sent.
 
 **Risk.** None; at worst one redundant no-op task per reconnect.
 
-### 1.3 `celery_singleton` lock leak on worker crash
+### ✅ SHIPPED (1.12.0) — 1.3 `celery_singleton` lock leak on worker crash
 
 **Problem.** `denorm/tasks.py` uses `base=Singleton` with no lock expiry.
 celery-singleton releases its Redis lock in `on_success`/`on_failure`; if a
@@ -95,7 +95,7 @@ in `docs/reference.rst`.
 duplicate concurrent task. That is safe: `flush_single` is written to be
 concurrency-safe (skip_locked claims + retry), duplicates degrade to no-ops.
 
-### 1.4 `CountField` / `SumField` lost-update race in `pre_save`
+### ✅ SHIPPED (1.12.0) — 1.4 `CountField` / `SumField` lost-update race in `pre_save`
 
 **Problem.** `AggregateField.pre_save` (`denorm/fields.py:181-201`) SELECTs
 the current counter value and returns it, so `save()` writes it back in the
@@ -134,7 +134,7 @@ fresh value must `refresh_from_db()`, document this).
 value was already capable of being stale a moment later; the contract change
 must be called out in HISTORY.rst.
 
-### 1.5 Unique-index dedup swallows invalidations while markers are claimed
+### ✅ SHIPPED (1.12.0) — 1.5 Unique-index dedup swallows invalidations while markers are claimed
 
 **Problem.** Since migration 0017, a marker INSERT whose
 `(content_type_id, COALESCE(object_id,-1), COALESCE(func_name,''))` key
@@ -213,7 +213,7 @@ key is freed early.
 
 ## Phase 2 — performance
 
-### 2.1 Replace plpgsql `EXCEPTION` block with `ON CONFLICT DO NOTHING`
+### ✅ SHIPPED (1.12.0) — 2.1 Replace plpgsql `EXCEPTION` block with `ON CONFLICT DO NOTHING`
 
 **Problem.** `TriggerActionInsert.sql` (`denorm/db/triggers.py:36-42`) wraps
 every dirty-marker INSERT in `BEGIN ... EXCEPTION WHEN unique_violation`.
@@ -253,7 +253,7 @@ a silent no-op). Add an assertion that generated SQL contains
 error class previously... was already propagated (the handler only caught
 `unique_violation`), so error semantics are unchanged.
 
-### 2.2 Move UPDATE-trigger change-detection into `CREATE TRIGGER ... WHEN`
+### ✅ SHIPPED (1.12.0) — 2.2 Move UPDATE-trigger change-detection into `CREATE TRIGGER ... WHEN`
 
 **Problem.** `Trigger.sql` (`denorm/db/triggers.py:95-133`) compiles the
 `OLD.col IS DISTINCT FROM NEW.col OR ...` change check into an `IF` inside
@@ -293,7 +293,7 @@ exist — verify coverage). SQL snapshot test for the `WHEN` clause.
 
 **Risk.** Low; semantics identical, evaluation point moves earlier.
 
-### 2.3 Use the ContentType cache in `flush_single`
+### ✅ SHIPPED (1.12.0) — 2.3 Use the ContentType cache in `flush_single`
 
 **Problem.** `denorms.flush_single` (`denorm/denorms.py:898`) calls
 `ContentType.objects.get(pk=...)` — uncached, one query per call. A 100k-row
@@ -311,7 +311,7 @@ content type resolve ContentType at most once.
 **Risk.** None. Cache invalidation is not a concern (content types are
 immutable in practice; Django core relies on the same cache).
 
-### 2.4 Stream instead of materializing; chunk celery dispatch
+### ✅ SHIPPED (1.12.0) — 2.4 Stream instead of materializing; chunk celery dispatch
 
 **Problem.**
 * `flush()` (`denorms.py:1011-1015`) loads all distinct
@@ -352,6 +352,13 @@ keep passing — the chunk task still keys on logical pairs, not marker pks.
 queues during deploy.
 
 ### 2.5 Collapse the self-trigger extra pass: converge inside `flush_single`
+
+> **Status: OPEN.** This item remains unimplemented and needs a fresh design
+> pass now that per-function markers are in place (1.12.0). With
+> `@depend_on_fields`, fresh same-object markers produced inside the
+> convergence loop carry specific `func_name` values rather than NULL, so the
+> loop iterations can stay targeted instead of escalating to full saves. The
+> design must be revisited with that in mind before implementation.
 
 **Problem.** When a flush save actually changes a stored value, the
 self-trigger (`CallbackDenorm`) inserts a fresh `(ct, oid, func_name=NULL)`
@@ -422,7 +429,7 @@ Concurrency safety:
 **Risk.** Holds the object row lock marginally longer (one extra UPDATE).
 Worth it: it halves transactions on the hot path.
 
-### 2.6 Fix the `(content_type_id, object_id)` lookup path; drop redundant indexes
+### ✅ SHIPPED (1.12.0) — 2.6 Fix the `(content_type_id, object_id)` lookup path; drop redundant indexes
 
 **Problem (lookup).** The unique index from 0017 is on
 `(content_type_id, COALESCE(object_id, -1), COALESCE(func_name, ''))` —
@@ -490,14 +497,14 @@ users with custom dashboards — called out in HISTORY.rst.
 
 ## Phase 3 — code health and robustness
 
-### 3.1 `flush()` safety valve
+### ✅ SHIPPED (1.12.0) — 3.1 `flush()` safety valve
 
 Cap outer passes (`DENORM_MAX_FLUSH_PASSES`, default 100). On hitting the
 cap, log an error naming the still-dirty content types and return instead of
 looping forever on a non-deterministic denorm function. Turns a hung worker
 into a diagnosable log line. (`denorm/denorms.py`, `conf/settings.py`.)
 
-### 3.2 `denorm_flush_via_queue` command fixes
+### ✅ SHIPPED (1.12.0) — 3.2 `denorm_flush_via_queue` command fixes
 
 * Replace `time.sleep(0.5)` + `result.get()` with `result.get(timeout=...)`;
   document that a celery result backend is required.
@@ -506,7 +513,7 @@ into a diagnosable log line. (`denorm/denorms.py`, `conf/settings.py`.)
 
 (`denorm/management/commands/denorm_flush_via_queue.py`.)
 
-### 3.3 Dead code removal
+### ✅ SHIPPED (1.12.0) — 3.3 Dead code removal
 
 * Django < 4.2 compat branches: `dependencies.py:70-73`
   (`add_lazy_relation`), `denorms.py` Django 1.8/1.9/1.10 try/excepts
@@ -561,6 +568,16 @@ One commit per removal category; run full suite after each.
   of escalating to full saves.
 * **Parallelizing `flush()`** — the celery path already provides
   parallelism; keep the inline path simple.
+* **Generic-relation UPDATE trigger WHEN expression operator-precedence
+  wart.** The content-type element `(OLD.ctf = X) OR (NEW.ctf = X)` is
+  AND-joined unparenthesized with the field-change conditions, so AND
+  binds tighter and the trigger over-fires when NEW matches a watched
+  content-type but no watched column changed. The behaviour is safe
+  (over-fire only; flush is idempotent) and was bug-for-bug preserved by
+  2.2 (which moved the same condition into the `WHEN` clause). Fix in a
+  follow-up: wrap the content-type OR element in its own parentheses so
+  the full expression reads
+  `((OLD.ctf = X) OR (NEW.ctf = X)) AND (OLD.col IS DISTINCT FROM NEW.col)`.
 
 ## Rollout
 

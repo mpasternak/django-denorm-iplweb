@@ -19,6 +19,16 @@ Fields
 .. autoclass:: denorm.CountField
    :members: __init__
 
+.. note::
+
+   ``CountField`` and ``SumField`` are trigger-maintained: the database
+   trigger increments or decrements the column atomically. The
+   ``pre_save`` hook writes ``col = col`` (a Django ``F()`` expression) on
+   UPDATE so it can never overwrite a concurrent trigger increment.
+   ``save()`` leaves the in-memory attribute untouched (it keeps whatever
+   value it had before the save). Call ``instance.refresh_from_db()``
+   whenever you need the current counter value after a ``save()``.
+
 
 Functions
 =========
@@ -166,6 +176,19 @@ and ``auto_now_add`` field behaviour during flush. Since targeted flush
 saves now use ``update_fields``, this setting only has effect for
 whole-object (``func_name=NULL``) flushes triggered by :func:`mark_dirty`
 or ``rebuildall``/``rebuild_instances_of``.
+
+``DENORM_SINGLETON_LOCK_EXPIRY`` (default ``600``): TTL in seconds for the
+Redis lock held by ``celery-singleton``-based tasks (``flush_single``,
+``flush_batch``, ``flush_via_queue``). Without an expiry a hard-killed worker
+(OOM-kill, SIGKILL, power loss) leaves its lock forever and the affected
+``(content_type_id, object_id)`` pair can never be re-enqueued. A flush that
+legitimately runs longer than the expiry only allows a duplicate concurrent
+task — safe because ``flush_single`` uses ``skip_locked`` claims.
+
+``DENORM_QUEUE_CHUNK_SIZE`` (default ``50``): number of
+``(content_type_id, object_id)`` pairs included in each ``flush_batch``
+Celery task dispatched by ``flush_via_queue``. Increase if your broker or
+worker startup overhead dominates; decrease for finer progress granularity.
 
 
 Upgrading
