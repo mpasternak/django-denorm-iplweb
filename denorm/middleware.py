@@ -1,13 +1,13 @@
 import logging
 
-import django
+from django.utils import deprecation
 
 from denorm import flush
 
 logger = logging.getLogger(__name__)
 
 
-class DenormMiddleware:
+class DenormMiddleware(deprecation.MiddlewareMixin):
     """
     Calls ``denorm.flush`` during the response stage of every request. If your data mostly or only changes during
     requests this should be a good idea. If you run into performance problems with this (because ``flush()`` takes
@@ -26,13 +26,3 @@ class DenormMiddleware:
     def process_response(self, request, response):
         flush()
         return response
-
-
-if django.VERSION >= (1, 10):
-    from django.utils import deprecation
-
-    class DenormMiddleware(
-        deprecation.MiddlewareMixin,
-        DenormMiddleware,
-    ):
-        pass

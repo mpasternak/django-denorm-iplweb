@@ -45,10 +45,7 @@ def many_to_many_pre_save(sender, instance, **kwargs):
             if hasattr(m2m, "denorm"):
                 # Does some extra jiggery-pokery for "through" m2m models.
                 # May not work under lots of conditions.
-                try:
-                    remote = m2m.remote_field  # Django>=1.10
-                except AttributeError:
-                    remote = m2m.rel
+                remote = m2m.remote_field
                 if hasattr(remote, "through_model"):
                     # Clear exisiting through records (bit heavy handed?)
                     kwargs = {m2m.related.var_name: instance}
@@ -64,10 +61,7 @@ def many_to_many_pre_save(sender, instance, **kwargs):
 
                 else:
                     values = m2m.denorm.func(instance)
-                    try:
-                        getattr(instance, m2m.attname).set(values)
-                    except AttributeError:  # Django<1.10
-                        setattr(instance, m2m.attname, values)
+                    getattr(instance, m2m.attname).set(values)
 
 
 def many_to_many_post_save(sender, instance, created, **kwargs):
@@ -530,10 +524,7 @@ class AggregateDenorm(Denorm):
 
         qn = self.get_quote_name(using)
 
-        try:  # Django>=1.9
-            related_field = self.manager.field
-        except AttributeError:
-            related_field = self.manager.related.field
+        related_field = self.manager.field
         if isinstance(related_field, ManyToManyField):
             fk_name = related_field.m2m_reverse_name()
             inc_where = [
@@ -556,10 +547,7 @@ class AggregateDenorm(Denorm):
             contenttypes.models.ContentType.objects.get_for_model(self.model).pk
         )
 
-        if hasattr(self.manager, "field"):  # Django>=1.9
-            related_model = self.manager.field.model
-        else:  # Django>=1.8
-            related_model = self.manager.related.related_model
+        related_model = self.manager.field.model
         inc_query = TriggerFilterQuery(related_model, trigger_alias="NEW")
         inc_query.add_q(Q(**self.filter))
         inc_query.add_q(~Q(**self.exclude))
