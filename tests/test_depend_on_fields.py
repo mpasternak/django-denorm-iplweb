@@ -469,6 +469,11 @@ class TestMarkDirtyAndNullContract:
         denorms.flush()
         DirtyInstance.objects.all().delete()
 
+        # Corrupt BOTH denorm columns directly so a targeted save would only
+        # heal the one it knows about — a full save must heal everything.
+        Profile.objects.filter(pk=p.pk).update(letterhead="STALE")
+        DirtyInstance.objects.all().delete()
+
         ct = ContentType.objects.get_for_model(Profile)
         # e.g. a marker from a field that was removed in a later deploy
         DirtyInstance.objects.create(
@@ -477,3 +482,23 @@ class TestMarkDirtyAndNullContract:
 
         denorms.flush_single(ct.pk, p.pk, ct)  # must not raise
         assert not DirtyInstance.objects.exists()
+
+        # Full save must have recomputed BOTH fields, healing the corruption.
+        p.refresh_from_db()
+        assert p.full_name == "John Doe", (
+            "Unknown func_name must trigger a full save that recomputes full_name."
+        )
+        assert p.letterhead == "Dear John Doe", (
+            "Unknown func_name must trigger a full save that heals ALL denorm "
+            "columns, including letterhead which was corrupted to 'STALE'."
+        )
+
+    def test_mark_dirty_rejects_unsaved_instances(
+        self, transactional_db, denorm_triggers
+    ):
+        from test_app.models import Profile
+
+        import denorm
+
+        with pytest.raises(ValueError):
+            denorm.mark_dirty(Profile(first_name="X", last_name="Y"))

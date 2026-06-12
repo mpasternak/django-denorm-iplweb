@@ -159,7 +159,7 @@ denormalized function is non-deterministic.
 
 ``DENORM_DIRTY_INSTANCES_VIEW_ACCESS`` (default ``"staff"``): access policy
 for the ``dirty_instances_count`` view. Accepts ``"staff"``,
-``"authenticated"``, or ``"public"`` — see :ref:`Views` for details.
+``"authenticated"``, or ``"public"`` — see the Views section above for details.
 
 ``DENORM_DISABLE_AUTOTIME_DURING_FLUSH``: when set, disables ``auto_now``
 and ``auto_now_add`` field behaviour during flush. Since targeted flush

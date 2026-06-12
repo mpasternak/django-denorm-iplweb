@@ -12,8 +12,9 @@ Changelog
   dependencies for ``@denormalized`` functions. A declared function gets
   a targeted per-function database trigger that fires only when a
   declared column changes. ``@depend_on_fields()`` with no arguments
-  means "reads no sibling columns" and produces no trigger for that
-  function.
+  means "reads no sibling columns" and emits no UPDATE self-trigger for
+  that function (the INSERT marker and any ``@depend_on_related``
+  triggers remain).
 * Per-function triggers replace the old catch-all self-trigger: the
   library's triggers no longer emit ``func_name=NULL`` markers.
   Conservative (undeclared) functions get an any-watched-column trigger

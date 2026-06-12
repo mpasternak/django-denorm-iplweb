@@ -167,13 +167,14 @@ runaway marker growth for this race.
 them**, inside the same transaction — instead of at the end:
 
 ```python
+# (as shipped — object row is locked FIRST, then markers are claimed-and-deleted)
 with transaction.atomic():
+    obj = lock_object_or_bail()   # skip_locked; bail if locked elsewhere or deleted
     claimed = list(... .select_for_update(skip_locked=True) ...)
     if not claimed:
         return
     func_names = set(... pk__in=claimed ...)        # snapshot scope first
     DirtyInstance.objects.filter(pk__in=claimed).delete()   # free the key NOW
-    obj = lock_object_or_bail()
     obj.save(**kw)
     # no trailing delete
 ```
@@ -538,9 +539,12 @@ One commit per removal category; run full suite after each.
   a transaction) and connection pooling. Revisit separately; the existing
   escape hatch is `DENORM_BULK_UNSAFE_TRIGGERS` (drops bulk-update safety).
 * **Per-action WHEN conditions for merged triggers** (see 2.2 caution).
-  Today, when a model has several `@denormalized` fields, their self-triggers
-  share one name and `TriggerSet.append` keeps only the **first** field's
-  `skip`/`only` watch-list — the other fields' conditions are silently
+  (Historical — fixed for self-triggers by the @depend_on_fields branch:
+  per-function trigger names never merge.) The concern still applies to
+  **merged dependency triggers**: when two `@depend_on_related` decorators
+  on the same model produce triggers with the same name, `TriggerSet.append`
+  merges their actions but keeps only the **first** trigger's `fields`
+  watch-list — the second trigger's `skip`/`only` conditions are silently
   ignored.
 * ~~**Declarative same-model dependencies.**~~ **Promoted to a designed
   feature** — see `docs/superpowers/specs/2026-06-12-depend-on-fields-design.md`.
@@ -560,12 +564,17 @@ One commit per removal category; run full suite after each.
 
 ## Rollout
 
-1. Phase 1 → release 1.11.3 (pure bugfixes, no schema/SQL changes).
+1. ~~Phase 1 → release 1.11.3 (pure bugfixes, no schema/SQL changes).
    Item 1.5 leads — it is also the hard prerequisite of the
-   `@depend_on_fields` feature.
+   `@depend_on_fields` feature.~~
+   **As shipped:** Item 1.5 was implemented inside the `@depend_on_fields`
+   branch (1.12.0), sequenced after the per-function trigger rework (which
+   makes 1.5's delete-at-claim semantics safe — self-triggers no longer
+   collide on a shared NULL key). Items 1.1–1.4 remain Phase 1 candidates
+   for a future 1.12.x / 1.13.0 bugfix release.
 2. `@depend_on_fields` feature (separate design doc,
    `docs/superpowers/specs/2026-06-12-depend-on-fields-design.md`) →
-   release 1.12.0, implemented first per project priority.
+   **shipped in 1.12.0**, implemented first per project priority.
 3. Phase 2 → 1.12.0 or follow-up (trigger SQL changes require
    `denorm_rebuild_triggers` after upgrade — release note), includes 0018.
 4. Phase 3 riding along or as a follow-up.

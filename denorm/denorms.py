@@ -794,6 +794,9 @@ def mark_dirty(*instances):
     denormalized field of this object" and takes precedence over
     field-level markers in flush_single.
     """
+    if any(instance.pk is None for instance in instances):
+        raise ValueError("mark_dirty() requires saved instances (pk is None).")
+
     from django.contrib.contenttypes.models import ContentType
 
     from .models import DirtyInstance
