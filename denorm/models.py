@@ -57,4 +57,3 @@ class DirtyInstance(models.Model):
             )
         except klass.DoesNotExist:
             return
-

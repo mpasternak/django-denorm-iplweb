@@ -22,7 +22,6 @@ except ImportError:
 from django.db import close_old_connections, connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
-from django.db.models.manager import Manager
 from django.db.models.query_utils import Q
 from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql.datastructures import Join
