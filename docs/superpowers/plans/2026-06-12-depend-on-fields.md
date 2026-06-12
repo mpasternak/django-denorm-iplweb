@@ -12,6 +12,50 @@
 - Design (approved): `docs/superpowers/specs/2026-06-12-depend-on-fields-design.md`
 - Audit spec item 1.5: `docs/spec-concurrency-performance-fixes.md`
 
+---
+
+## AMENDMENT (2026-06-12, after Task 1 review) — execution order changed
+
+A reviewer empirically demonstrated (by simulating the Task 2 fix) that
+**delete-at-claim livelocks `flush()` while the NULL catch-all still
+exists**: today, the marker-swallow bug is what TERMINATES re-marking for
+models whose every full save changes a column — `CacheKeyField` (new random
+value per save), unskipped `auto_now`, self-incrementing denorms
+(`CallCounter`). Claimed-NULL-marker → full save → column changes →
+self-trigger inserts NULL → today swallowed (brake), post-fix it lands →
+infinite loop.
+
+**Therefore:**
+
+1. **New execution order: Task 1 (done, red) → Task 3 → Task 4 → Task 5 →
+   Task 2 → Task 6 → Task 7 → Task 8.** The per-function trigger rework
+   (Task 5) replaces full saves with targeted `update_fields` saves that
+   never rewrite always-changing columns; only then is delete-at-claim
+   safe. Task 5's cascade tests do NOT require Task 2 (cascade marker keys
+   are unclaimed, so they land even pre-fix).
+2. **Task 5 refinement:** the conservative (undeclared) UPDATE trigger
+   excludes the function's OWN column from its watch-list
+   (`skip=(self.skip or ()) + (self.fieldname,)`). This stops
+   self-retriggering of non-deterministic functions (`CallCounter`) while
+   preserving undeclared chains (other functions' columns stay watched).
+   Symmetric with E002 forbidding declared self-dependencies. Trade-off
+   (document): a direct bulk-write to a denormalized column itself no
+   longer self-heals — writing denorm columns directly is unsupported.
+3. **Task 2 addition:** a flush() safety valve (audit spec item 3.1):
+   `DENORM_MAX_FLUSH_PASSES` (default 100); on hitting it, log an error
+   naming the still-dirty content types and return. Converts any residual
+   livelock into a diagnosable log line.
+4. The two Task 1 tests stay RED while Tasks 3-5 execute — full-suite runs
+   in those tasks must expect exactly these two failures
+   (`test_flush_single_deletes_claimed_markers_before_save`,
+   `test_concurrent_marker_survives_inflight_flush`) and no others.
+   (Task 1's tests were also corrected per review: pk-scoped final
+   assertion, settle via explicit delete instead of flush(), section
+   renumbered to 16, thread-start guard for retry re-entry.)
+5. Task 5 gains one extra trigger-shape assertion: UndeclaredProfile's
+   conservative UPDATE trigger watch-list excludes `full_name` (its own
+   column).
+
 **Conventions you must know:**
 - Run pytest suite: `pytest tests/ -x -q` (needs local PostgreSQL; uses fixtures `transactional_db`, `denorm_triggers`, `thread_runner` from `tests/conftest.py`).
 - Run Django suite: `python runtests.py postgres` (from repo root).
@@ -185,10 +229,56 @@ git commit -m "test: reproduce marker-swallow race from delayed claimed-marker d
 
 ---
 
-### Task 2: Implement item 1.5 — claim-and-delete in `flush_single`
+### Task 2: Implement item 1.5 — claim-and-delete in `flush_single` + flush safety valve
+
+> **AMENDED: executes AFTER Task 5** (see AMENDMENT at top — delete-at-claim
+> with the NULL catch-all still installed livelocks flush() on
+> always-changing columns). After this task, the two red tests from Task 1
+> must flip to GREEN.
 
 **Files:**
-- Modify: `denorm/denorms.py:886-966` (`flush_single`)
+- Modify: `denorm/denorms.py:886-966` (`flush_single`, `flush`)
+- Modify: `denorm/conf/settings.py`
+
+- [ ] **Step 0: Add the safety valve (audit spec item 3.1)**
+
+In `denorm/conf/settings.py` add:
+
+```python
+DENORM_MAX_FLUSH_PASSES = getattr(settings, "DENORM_MAX_FLUSH_PASSES", 100)
+```
+
+In `denorm/denorms.py` `flush()`, bound the outer `while True` loop: count
+passes; when the cap is reached, log an error naming the still-dirty
+content types and return:
+
+```python
+        passes = 0
+        while True:
+            if run_once and ran_once:
+                break
+
+            if passes >= settings.DENORM_MAX_FLUSH_PASSES:
+                remaining = list(
+                    DirtyInstance.objects.values_list(
+                        "content_type_id", flat=True
+                    ).distinct()
+                )
+                logger.error(
+                    "denorm.flush: aborting after %d passes; still-dirty "
+                    "content_type_ids=%s. A denormalized function is likely "
+                    "non-deterministic (returns a different value on every "
+                    "recompute), so flushing can never converge.",
+                    passes,
+                    remaining,
+                )
+                return
+            passes += 1
+            ...  # existing loop body unchanged
+```
+
+(`from denorm.conf import settings` is already imported inside functions in
+this module; `flush()` must import it the same way.)
 
 - [ ] **Step 1: Add the claim helper and reorder `flush_single`**
 
@@ -302,8 +392,9 @@ Note the lock-order change (object row first, then markers): all marker/object a
 
 - [ ] **Step 2: Run the Task 1 tests to verify they pass**
 
-Run: `pytest tests/test_deadlocks.py -k "claimed_markers_before_save or concurrent_marker_survives" -v`
-Expected: 2 passed.
+Run: `uv run pytest tests/test_deadlocks.py -k "claimed_markers_before_save or concurrent_marker_survives" -v`
+Expected: 2 passed (these were the red tests committed in Task 1; this task
+turns them green).
 
 - [ ] **Step 3: Run both full suites**
 
@@ -879,6 +970,24 @@ class TestTriggerSetShape:
         assert any("'full_name'" in s for s in action_sqls)
         assert any("'letterhead'" in s for s in action_sqls)
 
+    def test_conservative_trigger_excludes_own_column(self, db):
+        """A conservative (undeclared) trigger must not watch the
+        function's own column: flush writes that column, and watching it
+        would let non-deterministic functions re-mark themselves forever
+        once delete-at-claim lands (see plan AMENDMENT)."""
+        from denorm.denorms import build_triggerset
+
+        ts = build_triggerset()
+        updates = [
+            t
+            for t in ts.triggers.values()
+            if t.db_table == "test_app_undeclaredprofile" and t.event == "update"
+        ]
+        assert len(updates) == 1
+        watched = {f for f, _ in updates[0].fields}
+        assert "full_name" not in watched
+        assert {"first_name", "last_name"} <= watched
+
     def test_no_self_trigger_inserts_null_func_name(self, db):
         from denorm.denorms import build_triggerset
         from denorm.models import DirtyInstance
@@ -960,11 +1069,17 @@ class CallbackDenorm(BaseCallbackDenorm):
         ]
 
         if not any(isinstance(d, DependOnFields) for d in self.depend):
-            # Undeclared function: conservative watch-all UPDATE trigger —
-            # fires when any watched column changes (same conditions as the
-            # old catch-all), addressed to this function. Declared functions
-            # get their targeted UPDATE trigger from DependOnFields via
-            # super().get_triggers().
+            # Undeclared function: conservative UPDATE trigger — fires when
+            # any watched column EXCEPT this function's own changes (same
+            # conditions as the old catch-all minus the own column),
+            # addressed to this function. Excluding the own column stops
+            # non-deterministic functions from re-marking themselves forever
+            # (flush writes the column -> trigger would re-fire); undeclared
+            # chains keep working because OTHER functions' columns stay
+            # watched. Consequence: bulk-writing a denormalized column
+            # directly is unsupported (it no longer self-heals).
+            # Declared functions get their targeted UPDATE trigger from
+            # DependOnFields via super().get_triggers().
             trigger_list.append(
                 triggers.Trigger(
                     self.model,
@@ -973,7 +1088,7 @@ class CallbackDenorm(BaseCallbackDenorm):
                     [action],
                     content_type,
                     using,
-                    self.skip,
+                    tuple(self.skip or ()) + (self.fieldname,),
                     self.only,
                     self.func,
                 )

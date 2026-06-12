@@ -86,8 +86,17 @@ catch-all NULL pair. Per `@denormalized` function it emits:
 | Case | UPDATE trigger | INSERT trigger |
 |---|---|---|
 | Declared deps | condition: any *declared* column changed (`OLD.c IS DISTINCT FROM NEW.c` OR-chain) → insert `(ct, NEW.pk, 'func')` | unconditional insert `(ct, NEW.pk, 'func')` |
-| No declaration | condition: any *watched* column changed (today's skip/only semantics) → insert `(ct, NEW.pk, 'func')` | same |
+| No declaration | condition: any *watched* column changed (today's skip/only semantics) **except the function's own column** → insert `(ct, NEW.pk, 'func')` | same |
 | `@depend_on_fields()` (empty) | no UPDATE trigger | same |
+
+The own-column exclusion (amended after implementation review) is what
+makes flushing terminate once delete-at-claim lands: flush writes the
+function's column; if the conservative trigger watched it, every
+non-deterministic function (`CacheKeyField`-adjacent models, counters)
+would re-mark itself forever. Undeclared chains keep working because other
+functions' columns stay watched. Consequence, documented: bulk-writing a
+denormalized column directly is unsupported (it no longer self-heals);
+write source columns instead, or use `denorm.mark_dirty()`.
 
 Details:
 
@@ -131,11 +140,16 @@ instead of a full save — same recomputation, smaller UPDATE.
 * **Unknown func_name fallback already correct**: a marker naming a field
   that no longer exists (stale rows across deploys) falls through to a full
   save. Pinned by test.
-* **Hard prerequisite — audit spec item 1.5 (delete claimed markers at
-  claim time).** Cascades are the heart of this feature: flush writes
-  `full_name`, the per-function trigger marks `letterhead`. The current
-  swallow bug eats exactly that marker whenever an identical one was
-  claimed in the same round. 1.5 ships first (with its staged-race tests).
+* **Companion fix — audit spec item 1.5 (delete claimed markers at claim
+  time) ships in the same release, AFTER the trigger rework** (sequencing
+  inverted by implementation review). Cascades whose marker key was claimed
+  in the same round are eaten by the swallow bug until 1.5 lands; but 1.5
+  *before* the trigger rework livelocks `flush()` — today the swallow is
+  accidentally the termination brake for models whose every full save
+  changes a column (`CacheKeyField`, unskipped `auto_now`, self-counters).
+  Order: per-function triggers (targeted `update_fields` saves + own-column
+  exclusion) first, then delete-at-claim, plus a `DENORM_MAX_FLUSH_PASSES`
+  safety valve (audit spec 3.1).
 * The 2.5 convergence loop (audit spec) composes naturally: fresh
   same-object markers claimed by later loop iterations now carry specific
   func names, so iterations stay targeted instead of escalating to full
@@ -203,10 +217,13 @@ functional tests in the existing test-app/test_deadlocks styles:
 
 ## Sequencing and rollout
 
-1. Commit 1: audit spec item 1.5 (delete-at-claim) + staged-race tests.
-2. Commits 2..n: this feature, TDD, one logical change per commit
-   (decorator + dependency class → trigger generation → mark_dirty →
-   scanner → docs).
+1. Commit 1: red staged-race tests for 1.5 (stay red until step 3).
+2. Commits 2..n: decorator + dependency class → test models → per-function
+   trigger generation.
+3. Then: audit spec item 1.5 (delete-at-claim) + `DENORM_MAX_FLUSH_PASSES`
+   safety valve — flips the red tests green. (Order inverted vs. the
+   original draft; see "Flush path" above for why.)
+4. Then: mark_dirty → scanner → docs.
 3. Version 1.12.0. Release notes: run `denorm_rebuild_triggers` after
    upgrade (trigger SQL changes shape); NULL contract documented;
    `DENORM_DISABLE_AUTOTIME_DURING_FLUSH` scope note.
