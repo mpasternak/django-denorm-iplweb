@@ -786,6 +786,28 @@ def rebuild_instances_of(model, *args, **kwargs):
         )
 
 
+def mark_dirty(*instances):
+    """Explicitly mark whole objects dirty.
+
+    Creates func_name=NULL markers — the only NULL markers the library
+    produces besides rebuild_instances_of(). NULL means "recompute every
+    denormalized field of this object" and takes precedence over
+    field-level markers in flush_single.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import DirtyInstance
+
+    markers = [
+        DirtyInstance(
+            content_type=ContentType.objects.get_for_model(instance),
+            object_id=instance.pk,
+        )
+        for instance in instances
+    ]
+    DirtyInstance.objects.bulk_create(markers, ignore_conflicts=True)
+
+
 def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
     """
     Updates all models containing denormalized fields.
