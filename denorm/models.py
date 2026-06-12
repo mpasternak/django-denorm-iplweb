@@ -1,12 +1,6 @@
-from datetime import timedelta
-
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
-
-DEFAULT_TIMEOUT = timedelta(minutes=5)
-
-WEEK_AGO = timedelta(days=7)
 
 
 class DirtyInstance(models.Model):
@@ -64,18 +58,3 @@ class DirtyInstance(models.Model):
         except klass.DoesNotExist:
             return
 
-    def find_similar(self, **kwargs):
-        """Find similar objects to this one. Same content_type, same object_id; func_name if this
-        object has func_name, but in case of no func name -- find all objects, as no func name
-        means even broader scope:"""
-        return DirtyInstance.objects.filter(
-            content_type=self.content_type, object_id=self.object_id, **kwargs
-        )
-
-    def delete_similar(self):
-        """Remove similar DirtyInstances from db, which we haven't yet processed"""
-        self.find_similar().select_for_update(skip_locked=True).delete()
-
-    def delete_this_and_similar(self):
-        self.delete_similar()
-        return self.delete()
