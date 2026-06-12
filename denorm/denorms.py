@@ -987,7 +987,7 @@ def flush_single(content_type_id, object_id, content_type=None):
     if content_type is None:
         from django.contrib.contenttypes.models import ContentType
 
-        content_type = ContentType.objects.get(pk=content_type_id)
+        content_type = ContentType.objects.get_for_id(content_type_id)
 
     with transaction.atomic():
         klass = content_type.model_class()
@@ -1123,6 +1123,7 @@ def flush(
                 DirtyInstance.objects.all()
                 .values_list("content_type_id", "object_id")
                 .distinct()
+                .iterator(chunk_size=2000)
             ):
                 flush_single(content_type_id, object_id)
                 processed += 1

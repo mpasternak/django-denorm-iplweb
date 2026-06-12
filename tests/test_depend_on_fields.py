@@ -549,3 +549,31 @@ class TestMarkDirtyAndNullContract:
 
         with pytest.raises(ValueError):
             denorm.mark_dirty(Profile(first_name="X", last_name="Y"))
+
+
+class TestFlushQueryEfficiency:
+    def test_flush_single_uses_contenttype_cache(self, transactional_db, denorm_triggers):
+        """ContentType.objects.get(pk=...) bypasses Django's ContentType
+        cache — a 100k-marker flush issues 100k identical queries.
+        get_for_id() hits the per-process cache (spec 2.3)."""
+        from unittest.mock import patch
+
+        from test_app.models import Profile
+
+        from denorm import denorms
+        from denorm.models import DirtyInstance
+
+        p = Profile.objects.create(first_name="A", last_name="B")
+        denorms.flush()
+        DirtyInstance.objects.all().delete()
+        ct = ContentType.objects.get_for_model(Profile)
+        DirtyInstance.objects.create(
+            content_type=ct, object_id=p.pk, func_name="full_name"
+        )
+
+        with patch.object(
+            ContentType.objects, "get_for_id", wraps=ContentType.objects.get_for_id
+        ) as spy:
+            denorms.flush_single(ct.pk, p.pk)  # no content_type kwarg
+
+        spy.assert_called_once_with(ct.pk)
