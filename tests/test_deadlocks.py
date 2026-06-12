@@ -1074,10 +1074,21 @@ def test_denorm_queue_survives_listen_connection_drop(
     def run_queue():
         queue_started.set()
         try:
-            # Note: handle() blocks forever; if the loop survives the drop,
-            # this call never returns and the daemon thread stays alive
-            # until the test process exits — which is fine.
-            call_command("denorm_queue")
+            # Spec 1.2 added a startup backlog kick (flush_via_queue.delay()
+            # right after LISTEN, and one per reconnect). This suite has no
+            # broker/Redis, so a real .delay() would raise and — because
+            # AttributeError is a reconnect trigger — wedge the loop in an
+            # endless reconnect, never stabilizing the LISTEN. Stub the kick
+            # to a no-op: this test is about surviving the connection drop,
+            # not about Celery dispatch.
+            with patch(
+                "denorm.management.commands.denorm_queue.flush_via_queue.delay",
+                return_value=None,
+            ):
+                # Note: handle() blocks forever; if the loop survives the
+                # drop, this call never returns and the daemon thread stays
+                # alive until the test process exits — which is fine.
+                call_command("denorm_queue")
         except BaseException as e:  # noqa: BLE001
             queue_error.append((type(e).__name__, str(e)[:200]))
 

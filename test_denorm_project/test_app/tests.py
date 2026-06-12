@@ -774,10 +774,33 @@ class CommandsTestCase(TransactionTestCase):
     @patch("select.select")
     @patch("denorm.tasks.flush_via_queue")
     def test_denorm_queue(self, flush_via_queue, select):
-        "Test denorm_queue command."
+        "denorm_queue kicks one flush for pre-existing backlog + one per NOTIFY wake-up."
         call_command("denorm_queue", run_once=True)
         select.assert_called_once()
-        flush_via_queue.delay.assert_called_once()
+        # One .delay() right after LISTEN (startup backlog, spec 1.2),
+        # one after the select() wake-up.
+        self.assertEqual(flush_via_queue.delay.call_count, 2)
+
+    @patch("select.select")
+    @patch("denorm.tasks.flush_via_queue")
+    def test_denorm_queue_drains_notifications(self, flush_via_queue, select):
+        "spec 1.1: poll()ed notifications must be drained, not accumulated forever."
+        from django.db import connection
+
+        connection.cursor()  # ensure the connection exists
+        pg_con = connection.connection
+        # Simulate notifications a previous poll() appended.
+        pg_con.notifies.append(object())
+        pg_con.notifies.append(object())
+
+        call_command("denorm_queue", run_once=True)
+
+        self.assertEqual(
+            list(pg_con.notifies),
+            [],
+            "denorm_queue must drain pg_con.notifies after poll(); the list "
+            "grows without bound in this long-running daemon otherwise.",
+        )
 
     def test_makemigrations(self):
         "Test makemigrations command."
