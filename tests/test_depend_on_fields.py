@@ -402,6 +402,33 @@ class TestTriggerSetShape:
                     assert "EXCEPTION" not in sql.upper()
         assert checked > 0
 
+    def test_update_trigger_conditions_live_in_when_clause(self, db):
+        """Postgres evaluates CREATE TRIGGER ... WHEN before invoking the
+        trigger function: rows that touch no watched column skip plpgsql
+        entirely (spec 2.2). The IF used to live inside the function."""
+        from denorm.denorms import build_triggerset
+
+        ts = build_triggerset()
+        profile_updates = [
+            t
+            for t in ts.triggers.values()
+            if t.db_table == "test_app_profile" and t.event == "update"
+        ]
+        assert profile_updates
+        for trigger in profile_updates:
+            sql, _ = trigger.sql()
+            assert "WHEN (" in sql, "UPDATE trigger lost its WHEN clause"
+            assert "IS DISTINCT FROM" in sql.split("CREATE TRIGGER")[1], (
+                "change-detection must sit in the CREATE TRIGGER WHEN "
+                "clause, after the function definition"
+            )
+            body = sql.split("$$")[1]  # the plpgsql function body
+            assert "IF " not in body, (
+                "function body still carries the IF — condition must move "
+                "to the WHEN clause so non-matching rows never invoke "
+                "plpgsql"
+            )
+
 
 class TestMarkDirtyAndNullContract:
     def test_mark_dirty_emits_null_marker_and_flush_full_saves(

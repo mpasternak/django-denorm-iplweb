@@ -119,17 +119,18 @@ class Trigger(base.Trigger):
             elif event == "DELETE":
                 conditions.append("(OLD.%s = %s)" % (ct_field, content_type))
 
+        # Spec 2.2: emit change-detection as a CREATE TRIGGER ... WHEN clause
+        # instead of an IF inside the function body. Postgres evaluates WHEN
+        # before invoking the plpgsql function, so rows that touch no watched
+        # column (or carry the wrong content type) never enter plpgsql at all.
+        # WHEN may reference NEW only on INSERT and OLD only on DELETE (the
+        # condition builder above already respects that) and cannot contain
+        # subqueries (ours are plain column comparisons).
         if conditions:
-            cond = " AND ".join(conditions)
-            actions = "\n            ".join(action_list)
-            actions = (
-                """IF %(cond)s THEN
-            %(actions)s
-        END IF;"""
-                % locals()
-            )
+            when = "WHEN (%s)\n    " % " AND ".join(conditions)
         else:
-            actions = "\n        ".join(action_list)
+            when = ""
+        actions = "\n        ".join(action_list)
 
         comment = ""
         spaces = "        "
@@ -154,7 +155,8 @@ DROP TRIGGER IF EXISTS %(name)s ON %(table)s;
 
 CREATE TRIGGER %(name)s
     %(time)s %(event)s ON %(table)s
-    FOR EACH ROW EXECUTE PROCEDURE f_%(name)s();
+    FOR EACH ROW
+    %(when)sEXECUTE PROCEDURE f_%(name)s();
 """
             % locals()
         )
