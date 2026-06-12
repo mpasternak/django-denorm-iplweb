@@ -110,49 +110,6 @@ class Denorm:
         and connects all needed signals.
         """
 
-    def update(self, instance):
-        """
-        Updates the denormalizations in all instances in the queryset 'qs'.
-        """
-
-        # Get attribute name (required for denormalising ForeignKeys)
-        field = instance._meta.get_field(self.fieldname)
-        attname = field.attname
-
-        attr = getattr(instance, attname)
-
-        # only write new values to the DB if they actually changed
-        new_value = self.func(instance)
-
-        if isinstance(attr, Manager):
-            # for a many to many field the decorated
-            # function should return a list of either model instances
-            # or primary keys
-            old_pks = {x.pk for x in attr.all()}
-            new_pks = set()
-
-            for x in new_value:
-                # we need to compare sets of objects based on pk values,
-                # as django lacks an identity map.
-                if hasattr(x, "pk"):
-                    new_pks.add(x.pk)
-                else:
-                    new_pks.add(x)
-
-            if old_pks != new_pks:
-                setattr(instance, attname, new_value)
-                return {}
-
-        elif attr != new_value:
-            if hasattr(field, "related_field") and isinstance(
-                new_value, field.related_field.model
-            ):
-                setattr(instance, attname, None)
-                setattr(instance, field.name, new_value)
-            else:
-                setattr(instance, attname, new_value)
-            return {field.name: new_value}
-
     def get_triggers(self, using):
         return []
 
