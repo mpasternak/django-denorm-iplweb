@@ -922,11 +922,39 @@ class _DirtyInstanceFlushProgress:
         self._bar.refresh()
 
 
+def _claim_and_delete_markers(content_type_id, object_id):
+    """Lock, snapshot and DELETE all claimable markers for the pair.
+
+    Returns (claimed_any, func_names). Deleting at claim time (inside the
+    caller's transaction) frees the unique-index key, so a colliding
+    marker INSERT — from this transaction's own save() triggers or from a
+    concurrent writer — waits for our commit instead of being silently
+    dropped by the unique_violation handler.
+    See docs/spec-concurrency-performance-fixes.md item 1.5.
+    """
+    from .models import DirtyInstance
+
+    locked_pks = list(
+        DirtyInstance.objects.filter(
+            content_type_id=content_type_id, object_id=object_id
+        )
+        .select_for_update(skip_locked=True)
+        .values_list("pk", flat=True)
+    )
+    if not locked_pks:
+        return False, set()
+    func_names = set(
+        DirtyInstance.objects.filter(pk__in=locked_pks).values_list(
+            "func_name", flat=True
+        )
+    )
+    DirtyInstance.objects.filter(pk__in=locked_pks).delete()
+    return True, func_names
+
+
 @retry_on_serialization_failure
 def flush_single(content_type_id, object_id, content_type=None):
     from denorm.conf import settings
-
-    from .models import DirtyInstance
 
     disable_autotime_during_flush = settings.DENORM_DISABLE_AUTOTIME_DURING_FLUSH
     autotime_field_names = settings.DENORM_AUTOTIME_FIELD_NAMES
@@ -937,40 +965,32 @@ def flush_single(content_type_id, object_id, content_type=None):
         content_type = ContentType.objects.get(pk=content_type_id)
 
     with transaction.atomic():
-        # Lock and capture exactly the DirtyInstance PKs we'll process,
-        # so the final DELETE wipes only what we claimed — not rows
-        # inserted by triggers during obj.save() or by concurrent writers.
-        locked_pks = list(
-            DirtyInstance.objects.filter(
-                content_type_id=content_type.pk, object_id=object_id
-            )
-            .select_for_update(skip_locked=True)
-            .values_list("pk", flat=True)
-        )
-        if not locked_pks:
-            return
-
         klass = content_type.model_class()
 
+        # Lock the object row before claiming markers; every acquisition
+        # uses skip_locked, so flush workers never wait on each other and
+        # this ordering cannot deadlock flush-vs-flush.
         try:
             obj = klass.objects.select_for_update(of=("self",), skip_locked=True).get(
                 pk=object_id
             )
         except klass.DoesNotExist:
             # Either the row is locked by another worker, or it has been
-            # deleted between our DirtyInstance lock and this lookup.
-            # Distinguish: if the row truly doesn't exist, we own the
-            # cleanup; otherwise leave the markers for the next round.
+            # deleted between marker creation and this lookup. Distinguish:
+            # if the row truly doesn't exist, we own the cleanup; otherwise
+            # leave the markers untouched for whoever holds the lock.
             if klass.objects.filter(pk=object_id).exists():
                 return  # locked elsewhere; another worker will handle it
-            DirtyInstance.objects.filter(pk__in=locked_pks).delete()
+            _claim_and_delete_markers(content_type.pk, object_id)
             return
 
-        func_names = set(
-            DirtyInstance.objects.filter(pk__in=locked_pks).values_list(
-                "func_name", flat=True
-            )
-        )
+        # Claim AND DELETE the markers now, before save(): while a claimed
+        # marker still exists, the unique index silently swallows identical
+        # marker inserts (our own save's triggers, concurrent writers),
+        # losing invalidations.
+        claimed, func_names = _claim_and_delete_markers(content_type.pk, object_id)
+        if not claimed:
+            return
 
         kw = {}
         if None not in func_names:
@@ -1002,8 +1022,6 @@ def flush_single(content_type_id, object_id, content_type=None):
 
         obj.save(**kw)
 
-        DirtyInstance.objects.filter(pk__in=locked_pks).delete()
-
 
 def flush(
     run_once=False,
@@ -1030,6 +1048,8 @@ def flush(
 
     ran_once = False
 
+    from denorm.conf import settings
+
     from .models import DirtyInstance
 
     progress_context = (
@@ -1042,9 +1062,36 @@ def flush(
     )
 
     with progress_context:
+        passes = 0
         while True:
             if run_once and ran_once:
                 break
+
+            if passes >= settings.DENORM_MAX_FLUSH_PASSES:
+                remaining = list(
+                    DirtyInstance.objects.values_list(
+                        "content_type_id", flat=True
+                    ).distinct()
+                )
+                if not remaining:
+                    # Converged exactly on the final allowed pass.
+                    return
+                from django.contrib.contenttypes.models import ContentType
+
+                remaining_labels = sorted(
+                    f"{ct.app_label}.{ct.model}"
+                    for ct in ContentType.objects.filter(pk__in=remaining)
+                )
+                logger.error(
+                    "denorm.flush: aborting after %d passes; still-dirty "
+                    "models=%s. A denormalized function is likely "
+                    "non-deterministic (returns a different value on every "
+                    "recompute), so flushing can never converge.",
+                    passes,
+                    remaining_labels,
+                )
+                return
+            passes += 1
 
             processed = 0
             for content_type_id, object_id in (
