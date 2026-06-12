@@ -577,3 +577,14 @@ class TestFlushQueryEfficiency:
             denorms.flush_single(ct.pk, p.pk)  # no content_type kwarg
 
         spy.assert_called_once_with(ct.pk)
+
+    def test_marker_claim_matches_expression_index(self, db):
+        """The 0017 unique index keys on COALESCE(object_id, -1); a filter
+        on raw object_id can only use the content_type prefix, making a
+        large single-model flush O(N^2). The claim query must emit the
+        same COALESCE expression so both index columns are usable
+        (spec 2.6)."""
+        from denorm.denorms import _markers_for
+
+        sql = str(_markers_for(42, 7).query)
+        assert 'COALESCE("denorm_dirtyinstance"."object_id", -1)' in sql

@@ -947,6 +947,27 @@ class _DirtyInstanceFlushProgress:
         self._bar.refresh()
 
 
+def _markers_for(content_type_id, object_id):
+    """All markers for the logical pair, filtered so the 0017 expression
+    index is fully usable.
+
+    The unique index keys on COALESCE(object_id, -1); filtering the raw
+    column would fall back to scanning the whole content-type prefix —
+    O(backlog) per object, O(backlog^2) per flush.
+    """
+    from django.db.models import Value
+    from django.db.models.functions import Coalesce
+
+    from .models import DirtyInstance
+
+    return DirtyInstance.objects.alias(
+        _oid=Coalesce("object_id", Value(-1))
+    ).filter(
+        content_type_id=content_type_id,
+        _oid=-1 if object_id is None else object_id,
+    )
+
+
 def _claim_and_delete_markers(content_type_id, object_id):
     """Lock, snapshot and DELETE all claimable markers for the pair.
 
@@ -960,9 +981,7 @@ def _claim_and_delete_markers(content_type_id, object_id):
     from .models import DirtyInstance
 
     locked_pks = list(
-        DirtyInstance.objects.filter(
-            content_type_id=content_type_id, object_id=object_id
-        )
+        _markers_for(content_type_id, object_id)
         .select_for_update(skip_locked=True)
         .values_list("pk", flat=True)
     )
