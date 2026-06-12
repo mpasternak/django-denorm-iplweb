@@ -1316,3 +1316,76 @@ def test_singleton_tasks_carry_lock_expiry():
             f"{task.name} has no lock_expiry; a crashed worker permanently "
             "wedges this Singleton."
         )
+
+
+# ---------------------------------------------------------------------------
+# 18. Spec 1.4: AggregateField.pre_save read-then-write loses concurrent
+# trigger increments.
+# ---------------------------------------------------------------------------
+
+
+def test_countfield_save_does_not_clobber_concurrent_increment(
+    transactional_db, denorm_triggers
+):
+    """AggregateField.pre_save SELECTs the trigger-maintained counter and
+    save() writes that value back. An increment committed between the
+    SELECT and the UPDATE is silently overwritten. Fix: write
+    `col = col` (an F() expression) so the UPDATE can never lose
+    concurrent increments.
+
+    Staged deterministically: a hook between pre_save and the UPDATE
+    commits a child insert (trigger increments the counter), then the
+    parent save proceeds.
+    """
+    from test_app.models import Forum, Post
+
+    from denorm import denorms
+    from denorm.fields import AggregateField
+    from denorm.models import DirtyInstance
+
+    forum = Forum.objects.create(title="cnt")
+    denorms.flush()
+    DirtyInstance.objects.all().delete()
+    forum.refresh_from_db()
+    assert forum.post_count == 0
+
+    orig_pre_save = AggregateField.pre_save
+    state = {"fired": False}
+
+    def racing_pre_save(self, instance, add):
+        value = orig_pre_save(self, instance, add)
+        if not add and not state["fired"]:
+            state["fired"] = True
+
+            def writer():
+                from django.db import connections
+
+                try:
+                    # Own thread = own connection (autocommit): the child
+                    # commits and its trigger increments forum.post_count
+                    # BEFORE the parent's UPDATE executes.
+                    Post.objects.create(forum_id=instance.pk, title="mid-save")
+                finally:
+                    for alias in connections:
+                        try:
+                            connections[alias].close()
+                        except Exception:
+                            pass
+
+            t = threading.Thread(target=writer, daemon=True)
+            t.start()
+            t.join(timeout=30)
+            assert not t.is_alive(), "writer hung — unexpected lock"
+        return value
+
+    with patch.object(AggregateField, "pre_save", racing_pre_save):
+        forum.save()
+
+    count_in_db = Forum.objects.values_list("post_count", flat=True).get(
+        pk=forum.pk
+    )
+    assert count_in_db == 1, (
+        "Parent save() overwrote the trigger-maintained counter with the "
+        "value read before the concurrent increment committed (lost "
+        "update). pre_save must emit `col = col`, not a snapshot value."
+    )
