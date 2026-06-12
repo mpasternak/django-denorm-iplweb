@@ -19,3 +19,8 @@ DENORM_MAX_FLUSH_PASSES = getattr(settings, "DENORM_MAX_FLUSH_PASSES", 100)
 DENORM_DIRTY_INSTANCES_VIEW_ACCESS = getattr(
     settings, "DENORM_DIRTY_INSTANCES_VIEW_ACCESS", "staff"
 )
+
+# Redis lock TTL (seconds) for celery-singleton tasks. Without an expiry,
+# a SIGKILLed worker leaves its lock forever and the affected object can
+# never be enqueued again.
+DENORM_SINGLETON_LOCK_EXPIRY = getattr(settings, "DENORM_SINGLETON_LOCK_EXPIRY", 600)

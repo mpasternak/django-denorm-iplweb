@@ -1296,3 +1296,23 @@ def test_concurrent_marker_survives_inflight_flush(
         "markers must be deleted at claim time so colliding inserts wait "
         "for our commit instead of being dropped (audit spec item 1.5)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 17. Spec 1.3: celery-singleton locks must expire.
+# ---------------------------------------------------------------------------
+
+
+def test_singleton_tasks_carry_lock_expiry():
+    """Without lock_expiry, a SIGKILLed worker leaves the Redis lock
+    forever and that (content_type, object) pair can never be enqueued
+    again — denormalization for the object silently stops."""
+    from denorm import tasks
+    from denorm.conf import settings as denorm_settings
+
+    assert denorm_settings.DENORM_SINGLETON_LOCK_EXPIRY == 600
+    for task in (tasks.flush_single, tasks.flush_via_queue):
+        assert task.lock_expiry == denorm_settings.DENORM_SINGLETON_LOCK_EXPIRY, (
+            f"{task.name} has no lock_expiry; a crashed worker permanently "
+            "wedges this Singleton."
+        )
