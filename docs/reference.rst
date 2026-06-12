@@ -101,3 +101,78 @@ Management commands
 
 **denorm_sql**
     .. automodule:: denorm.management.commands.denorm_sql
+
+
+Same-model dependencies: ``depend_on_fields``
+=============================================
+
+.. function:: denorm.depend_on_fields(*field_names)
+
+   Declares that a :func:`denormalized` function reads the given sibling
+   columns of its own model (plain columns or other denormalized fields)::
+
+       class Person(models.Model):
+           first_name = models.CharField(max_length=50)
+           last_name = models.CharField(max_length=50)
+
+           @denormalized(models.CharField, max_length=101)
+           @depend_on_fields("first_name", "last_name")
+           def full_name(self):
+               return f"{self.first_name} {self.last_name}"
+
+           @denormalized(models.CharField, max_length=120)
+           @depend_on_fields("full_name")
+           def letterhead(self):
+               return f"Dear {self.full_name}"
+
+   A declared function is marked dirty only when a declared column
+   changes. An undeclared function keeps conservative semantics: any
+   watched column change (except the function's own column) marks it
+   dirty. ``@depend_on_fields()`` with no arguments means "reads no
+   sibling columns".
+
+   Bulk-writing a denormalized column directly is unsupported — it does
+   not mark anything dirty. Write the source columns instead, or use
+   :func:`mark_dirty`.
+
+   Declarations are audited by Django system checks (``denorm.E001``,
+   ``denorm.E002``, ``denorm.W001``, ``denorm.W002``); an incomplete
+   declaration means silent staleness, exactly like a missing
+   :func:`depend_on_related`. Silence individual checks via
+   ``SILENCED_SYSTEM_CHECKS``.
+
+.. function:: denorm.mark_dirty(*instances)
+
+   Explicitly marks whole objects dirty (``func_name=NULL`` markers).
+   NULL means "recompute every denormalized field of this object" and
+   takes precedence over field-level markers during flush. The library's
+   own triggers never emit NULL; only ``mark_dirty`` and
+   ``rebuildall``/``rebuild_instances_of`` do.
+
+
+Settings
+========
+
+``DENORM_MAX_FLUSH_PASSES`` (default ``100``): ``flush()`` aborts with an
+error log naming the still-dirty models instead of looping forever when a
+denormalized function is non-deterministic.
+
+``DENORM_DIRTY_INSTANCES_VIEW_ACCESS`` (default ``"staff"``): access policy
+for the ``dirty_instances_count`` view. Accepts ``"staff"``,
+``"authenticated"``, or ``"public"`` — see :ref:`Views` for details.
+
+``DENORM_DISABLE_AUTOTIME_DURING_FLUSH``: when set, disables ``auto_now``
+and ``auto_now_add`` field behaviour during flush. Since targeted flush
+saves now use ``update_fields``, this setting only has effect for
+whole-object (``func_name=NULL``) flushes triggered by :func:`mark_dirty`
+or ``rebuildall``/``rebuild_instances_of``.
+
+
+Upgrading
+=========
+
+After upgrading to 1.12, run ``manage.py denorm_rebuild_triggers`` — the
+trigger SQL changed shape (per-function markers replace the old catch-all).
+Targeted flush saves use ``update_fields`` and no longer touch ``auto_now``
+columns; ``DENORM_DISABLE_AUTOTIME_DURING_FLUSH`` now only matters for
+whole-object (NULL) flushes.

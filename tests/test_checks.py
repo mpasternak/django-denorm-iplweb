@@ -141,7 +141,6 @@ class TestAuditDenorm:
         ids = [m.id for m in audit_denorm(FakeDenorm)]
         assert "denorm.W002" in ids
 
-
     def test_pk_read_is_not_reported_as_sibling(self, db):
         """Reading self.id (or any pk) as an existence guard must not
         produce W001 noise — declaring the pk in @depend_on_fields is

@@ -1,6 +1,48 @@
 Changelog
 =========
 
+1.12.0 (unreleased)
+-------------------
+
+* fix: ``flush_single`` now deletes claimed ``DirtyInstance`` markers at
+  claim time. Previously, the unique-index dedup could silently swallow
+  concurrent invalidation markers inserted between the claim and the
+  delete, permanently losing them until the next full rebuild.
+* feature: ``@depend_on_fields(*names)`` — declarative same-model
+  dependencies for ``@denormalized`` functions. A declared function gets
+  a targeted per-function database trigger that fires only when a
+  declared column changes. ``@depend_on_fields()`` with no arguments
+  means "reads no sibling columns" and produces no trigger for that
+  function.
+* Per-function triggers replace the old catch-all self-trigger: the
+  library's triggers no longer emit ``func_name=NULL`` markers.
+  Conservative (undeclared) functions get an any-watched-column trigger
+  that excludes the function's own column. Consequence: bulk-writing a
+  denormalized column directly is unsupported and does not mark anything
+  dirty; write source columns instead or call ``mark_dirty()``.
+* ``NULL`` contract: ``func_name=NULL`` means "recompute every
+  denormalized field of this object" and takes precedence over
+  field-level markers during flush. Only ``mark_dirty(*instances)`` and
+  ``rebuildall``/``rebuild_instances_of`` produce NULL markers now.
+* feature: ``denorm.mark_dirty(*instances)`` — explicitly marks whole
+  objects dirty (NULL markers).
+* feature: ``DENORM_MAX_FLUSH_PASSES`` setting (default ``100``):
+  ``flush()`` aborts with an error log naming the still-dirty models
+  instead of looping forever when a denormalized function is
+  non-deterministic.
+* feature: Django system checks ``denorm.E001``, ``denorm.E002``,
+  ``denorm.W001``, ``denorm.W002`` audit ``@depend_on_fields``
+  declarations using an AST scanner. An incomplete declaration causes
+  silent staleness, exactly like a missing ``@depend_on_related``.
+  Silence individual checks via ``SILENCED_SYSTEM_CHECKS``. PK reads
+  are ignored.
+* Targeted flush saves now use ``update_fields`` — ``auto_now`` columns
+  are no longer touched by targeted flushes.
+  ``DENORM_DISABLE_AUTOTIME_DURING_FLUSH`` now only applies to
+  whole-object (``func_name=NULL``) flushes.
+* **Upgrade note**: run ``manage.py denorm_rebuild_triggers`` after
+  upgrading — trigger SQL changed shape (per-function markers).
+
 1.11.1
 ------
 
