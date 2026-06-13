@@ -1,7 +1,7 @@
 Changelog
 =========
 
-1.12.0 (unreleased)
+1.12.0 (2026-06-13)
 -------------------
 
 * perf: ``flush_via_queue`` now **self-converges** via a Celery chord.
