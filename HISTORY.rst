@@ -117,6 +117,11 @@ Changelog
   remaining markers fall back to the outer ``flush()`` loop (bounded by
   ``DENORM_MAX_FLUSH_PASSES``). No API change, no migration, no trigger
   SQL change (``denorm_rebuild_triggers`` is not needed for this fix).
+* perf: ORM saves drop provably-redundant self-markers (plain-column
+  same-model denorm fields) in a ``post_save`` handler, eliminating the
+  redundant ``flush()`` re-save for the common compute-from-own-columns
+  pattern.  Chain denorms (depending on another denorm field), related
+  denorms (``@depend_on_related``), and bulk/raw writes are unaffected.
 * ``denorm_flush_via_queue`` command now uses ``result.get(timeout=…)``
   instead of ``time.sleep(0.5)`` and times progress against the number
   of dispatched tasks rather than raw ``DirtyInstance`` rows. A Celery
