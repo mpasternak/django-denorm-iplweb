@@ -290,6 +290,27 @@ task — safe because ``flush_single`` uses ``skip_locked`` claims.
 Celery task dispatched by ``flush_via_queue``. Increase if your broker or
 worker startup overhead dominates; decrease for finer progress granularity.
 
+``DENORM_MAX_QUEUE_PASSES`` (default ``100``): the queue analogue of
+``DENORM_MAX_FLUSH_PASSES``. Since 1.12.0 ``flush_via_queue`` self-converges:
+it dispatches the current snapshot as a Celery **chord** whose callback
+re-checks the ``DirtyInstance`` table and re-dispatches the task until a pass
+leaves nothing — draining cross-object cascade markers created *during*
+processing, exactly as the inline ``flush()`` loop does. This setting caps the
+number of chord re-dispatch passes; on reaching it the task aborts with an
+error log naming the still-dirty ``content_type_id`` values (a likely
+non-deterministic denormalized function), instead of re-dispatching forever.
+
+.. note::
+
+   Since 1.12.0, marker INSERTs performed *during a flush* no longer emit a
+   ``LISTEN/NOTIFY`` wake-up. ``flush_single`` sets a transaction-local GUC
+   (``SET LOCAL denorm.flushing = 'on'``) and migration ``0019`` guards the
+   notify trigger with it, so only **genuine** writes (application saves, bulk
+   updates, raw SQL) notify the ``denorm_queue`` channel. This removes the
+   wasted NOTIFY→no-op-flush churn under heavy cascades. The queue path stays
+   correct because it now self-converges via the chord (above) instead of
+   relying on flush-internal NOTIFY to rediscover cross-object cascades.
+
 ``DENORM_MAX_CONVERGE_PASSES`` (default ``5``): per-object convergence pass
 cap inside ``flush_single``. After each ``save()`` call, ``flush_single``
 checks whether the save's own triggers inserted new markers for the same

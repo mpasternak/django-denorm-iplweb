@@ -1024,6 +1024,18 @@ def flush_single(content_type_id, object_id, content_type=None):
             _claim_and_delete_markers(content_type.pk, object_id)
             return
 
+        # Suppress flush-internal NOTIFY: the statement-level trigger on
+        # denorm_dirtyinstance (migration 0019) skips pg_notify when
+        # denorm.flushing = 'on'. SET LOCAL is transaction-scoped (auto-reset
+        # at commit/rollback) and applies to THIS connection, so the marker
+        # INSERTs fired by obj.save() below — same transaction, same
+        # connection — see it and do NOT wake the queue for work this flush is
+        # already doing. Genuine writes on other connections are unaffected.
+        # Set here (after the object lock, before any save) so every path that
+        # calls obj.save() has it; the early-return paths above never save.
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL denorm.flushing = 'on'")
+
         # Claim AND DELETE the markers now, before save(): while a claimed
         # marker still exists, the unique index silently swallows identical
         # marker inserts (our own save's triggers, concurrent writers),

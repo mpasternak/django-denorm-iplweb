@@ -1132,9 +1132,16 @@ def test_denorm_queue_survives_listen_connection_drop(
             # Note: handle() blocks forever; if the loop survives the drop,
             # this call never returns and the daemon thread stays alive until
             # the test process exits — which is fine.
+            # Rebind the module-level NAME to a Mock (instead of patching
+            # `.delay` on the shared task object). call_command("denorm_queue")
+            # blocks forever, so the `with patch(...)` context never exits and
+            # its restore never runs. Patching the real task's `.delay` would
+            # therefore leak a return_value=None mock across the whole test
+            # session, breaking every later test that depends on
+            # flush_via_queue.delay() returning a real AsyncResult. Patching
+            # the imported name leaves the real task untouched.
             with patch(
-                "denorm.management.commands.denorm_queue.flush_via_queue.delay",
-                return_value=None,
+                "denorm.management.commands.denorm_queue.flush_via_queue"
             ):
                 call_command("denorm_queue")
         except BaseException as e:  # noqa: BLE001
