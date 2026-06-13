@@ -100,6 +100,17 @@ Changelog
   FK index on ``content_type``); migration ``0018`` handles this.
   Users who filter ``DirtyInstance`` themselves should review
   ``pg_stat_user_indexes`` and re-add needed indexes in their own apps.
+* perf: ``flush_single`` now converges same-model denorm chains inside
+  one transaction (spec 2.5) instead of requiring one outer ``flush()``
+  pass per chain link — fewer transactions and locks on the hot path. For
+  example, a two-link chain (``first_name`` → ``full_name`` →
+  ``letterhead``) is now settled in a single ``flush_single`` call with
+  two targeted ``update_fields`` saves instead of two separate
+  transactions. New setting ``DENORM_MAX_CONVERGE_PASSES`` (default ``5``)
+  caps the inner loop for non-deterministic functions; on hitting the cap,
+  remaining markers fall back to the outer ``flush()`` loop (bounded by
+  ``DENORM_MAX_FLUSH_PASSES``). No API change, no migration, no trigger
+  SQL change (``denorm_rebuild_triggers`` is not needed for this fix).
 * ``denorm_flush_via_queue`` command now uses ``result.get(timeout=…)``
   instead of ``time.sleep(0.5)`` and times progress against the number
   of dispatched tasks rather than raw ``DirtyInstance`` rows. A Celery
