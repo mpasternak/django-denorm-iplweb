@@ -104,6 +104,14 @@ Changelog
   instead of ``time.sleep(0.5)`` and times progress against the number
   of dispatched tasks rather than raw ``DirtyInstance`` rows. A Celery
   result backend is required (spec 3.2).
+* **Testing**: the test suite now runs the Celery queue against a real Redis
+  broker and result backend (``testcontainers``, ``RedisContainer``). A handful
+  of end-to-end tests use a real in-process Celery worker (``eager OFF``) to
+  exercise the genuine broker serialization → worker round-trip → ``flush_batch``
+  group fan-out → ``flush_single`` drain path. The rest use ``task_always_eager``
+  for speed. Singleton lock-backend dedup is tested with direct Redis lock
+  assertions (deterministic, no race). Contributors now need Docker for the full
+  test suite (already required for Postgres). No runtime or API change.
 * Dead code removed: Django < 4.2 compatibility branches
   (``add_lazy_relation``, Django 1.8–1.10 try/excepts, version-guarded
   middleware wrapper); unused ``DirtyInstance`` helpers
