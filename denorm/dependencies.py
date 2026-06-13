@@ -5,7 +5,12 @@ from django.db import connection, connections, models
 from django.db.models.fields import related
 
 import denorm
-from denorm.helpers import find_fks, find_m2ms, remote_field_model
+from denorm.helpers import (
+    content_type_select_sql,
+    find_fks,
+    find_m2ms,
+    remote_field_model,
+)
 
 
 def _qv(value):
@@ -460,6 +465,10 @@ class CallbackDependOnRelated(DependOnRelated):
         content_type = str(
             contenttypes.models.ContentType.objects.get_for_model(self.this_model).pk
         )
+        # DirtyInstance markers resolve the content-type id at trigger-fire
+        # time (immune to content-type renumbering); the bare ``content_type``
+        # literal stays for the Trigger name/WHEN, which can't hold a subquery.
+        content_type_value = content_type_select_sql(self.this_model)
 
         if self.type == "forward":
             # breakpoint()
@@ -473,7 +482,7 @@ class CallbackDependOnRelated(DependOnRelated):
                 values=triggers.TriggerNestedSelect(
                     self.this_model._meta.pk.model._meta.db_table,
                     (
-                        content_type,
+                        content_type_value,
                         self.this_model._meta.pk.get_attname_column()[1],
                         _qv(self.func.__name__),
                     ),
@@ -489,7 +498,7 @@ class CallbackDependOnRelated(DependOnRelated):
                 values=triggers.TriggerNestedSelect(
                     self.this_model._meta.pk.model._meta.db_table,
                     (
-                        content_type,
+                        content_type_value,
                         self.this_model._meta.pk.get_attname_column()[1],
                         _qv(self.func.__name__),
                     ),
@@ -547,7 +556,7 @@ class CallbackDependOnRelated(DependOnRelated):
                 values=triggers.TriggerNestedSelect(
                     self.field.model._meta.db_table,
                     (
-                        content_type,
+                        content_type_value,
                         self.field.get_attname_column()[1],
                         _qv(self.func.__name__),
                     ),
@@ -561,7 +570,7 @@ class CallbackDependOnRelated(DependOnRelated):
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
                 values=(
-                    content_type,
+                    content_type_value,
                     "OLD.%s" % self.field.get_attname_column()[1],
                     _qv(self.func.__name__),
                 ),
@@ -626,12 +635,20 @@ class CallbackDependOnRelated(DependOnRelated):
             action_m2m_new = triggers.TriggerActionInsert(
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
-                values=(content_type, "NEW.%s" % column_name, _qv(self.func.__name__)),
+                values=(
+                    content_type_value,
+                    "NEW.%s" % column_name,
+                    _qv(self.func.__name__),
+                ),
             )
             action_m2m_old = triggers.TriggerActionInsert(
                 model=denorm.models.DirtyInstance,
                 columns=("content_type_id", "object_id", "func_name"),
-                values=(content_type, "OLD.%s" % column_name, _qv(self.func.__name__)),
+                values=(
+                    content_type_value,
+                    "OLD.%s" % column_name,
+                    _qv(self.func.__name__),
+                ),
             )
 
             trigger_list = [
@@ -684,7 +701,7 @@ class CallbackDependOnRelated(DependOnRelated):
                     columns=("content_type_id", "object_id", "func_name"),
                     values=triggers.TriggerNestedSelect(
                         self.field.m2m_db_table(),
-                        (content_type, column_name, _qv(self.func.__name__)),
+                        (content_type_value, column_name, _qv(self.func.__name__)),
                         **{
                             reverse_column_name: "NEW.%s"
                             % qn(self.other_model._meta.pk.get_attname_column()[1])
@@ -775,11 +792,15 @@ class DependOnFields(DenormDependency):
         content_type = str(
             contenttypes.models.ContentType.objects.get_for_model(self.this_model).pk
         )
+        # DirtyInstance markers resolve the content-type id at trigger-fire
+        # time (immune to content-type renumbering); the bare ``content_type``
+        # literal stays for the Trigger name/WHEN, which can't hold a subquery.
+        content_type_value = content_type_select_sql(self.this_model)
         action = triggers.TriggerActionInsert(
             model=denorm.models.DirtyInstance,
             columns=("content_type_id", "object_id", "func_name"),
             values=(
-                content_type,
+                content_type_value,
                 "NEW.%s" % qn(self.this_model._meta.pk.get_attname_column()[1]),
                 _qv(self.func.__name__),
             ),

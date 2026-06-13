@@ -2,6 +2,57 @@
 from django.db import models
 
 
+def content_type_select_sql(model):
+    """
+    Return an SQL scalar subquery that resolves ``model``'s
+    ``django_content_type`` id *at trigger-fire time*, e.g.::
+
+        (SELECT id FROM django_content_type
+          WHERE app_label = 'forum' AND model = 'post')
+
+    Triggers insert this into ``denorm_dirtyinstance.content_type_id``
+    instead of an integer literal baked at trigger-build time. A baked
+    literal is only correct while the content-type table is never
+    renumbered after the triggers were installed. That assumption breaks:
+
+    * under Django's ``TransactionTestCase`` teardown, which TRUNCATEs
+      ``django_content_type`` and lets the ``post_migrate`` handler
+      recreate the rows with fresh, drifting ids (the common case — every
+      ``transaction=True`` test can shift the ids out from under the
+      triggers), and
+    * more rarely in production after a restored dump that renumbered the
+      table, or after ``manage.py remove_stale_contenttypes`` followed by
+      recreation, without a ``denorm.install_triggers`` rebuild.
+
+    When the literal goes stale the marker insert references a content
+    type row that no longer exists and the FK
+    ``denorm_dirtyinstance_content_type_id_...`` raises ForeignKeyViolation.
+    Resolving the id dynamically removes the assumption entirely. The
+    lookup is a single probe of the ``(app_label, model)`` unique index on
+    a tiny, fully cached table, so the per-fire cost is negligible.
+
+    The (app_label, model_name) pair is taken from the *concrete* model —
+    exactly what ``ContentType.objects.get_for_model`` stores — so proxy
+    models resolve to the same content type the ORM would use.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    opts = model._meta.concrete_model._meta
+
+    def _quote(value):
+        return "'%s'" % str(value).replace("'", "''")
+
+    return (
+        "(SELECT id FROM %(table)s "
+        "WHERE app_label = %(app)s AND model = %(model)s)"
+        % {
+            "table": ContentType._meta.db_table,
+            "app": _quote(opts.app_label),
+            "model": _quote(opts.model_name),
+        }
+    )
+
+
 def remote_field_model(field):
     if hasattr(field, 'remote_field') and field.remote_field:  # in Django>=1.9
         remote_field_model = field.remote_field.model

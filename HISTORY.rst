@@ -1,6 +1,34 @@
 Changelog
 =========
 
+1.12.1 (2026-06-13)
+-------------------
+
+* fix: triggers now resolve a model's ``django_content_type`` id with a
+  ``(SELECT id FROM django_content_type WHERE app_label = ... AND model = ...)``
+  subquery evaluated **at trigger-fire time**, instead of baking the id as an
+  integer literal at trigger-build time. A baked literal is only correct while
+  the content-type table is never renumbered after the triggers are installed;
+  that assumption breaks under Django's ``TransactionTestCase`` teardown (which
+  TRUNCATEs ``django_content_type`` and lets ``post_migrate`` recreate the rows
+  with drifting ids) and, more rarely, after a restored dump that renumbered the
+  table or a ``remove_stale_contenttypes`` + recreate without a trigger rebuild.
+  When the literal went stale the marker insert referenced a content type that no
+  longer existed and the FK ``denorm_dirtyinstance_content_type_id_...`` raised
+  ``ForeignKeyViolation``. The lookup is a single probe of the
+  ``(app_label, model)`` unique index on a tiny, fully cached table, so the
+  per-fire cost is negligible. (The scalar pk is still used for the trigger name
+  and ``WHEN`` clause, which cannot contain a subquery.)
+* fix: ``drop_triggers()`` now matches the real trigger naming
+  (``d_{aft,bef}_row_{ins,upd,del}_on_<table>``, plus the legacy ``denorm_%``
+  prefix). The old ``LIKE 'denorm_%'`` matched none of the library's own
+  triggers, so ``drop_triggers()`` / ``denorm_drop`` / the drop half of
+  ``denorm_rebuild_triggers`` were silent no-ops. Because ``install_triggers``
+  only ``CREATE OR REPLACE``-s same-named triggers, an upgrade that renames a
+  trigger (e.g. the 1.11 → 1.12 self-trigger rename) would orphan the old one —
+  and nothing could clean it. A drop+install rebuild now genuinely removes the
+  whole set first. ``DROP TRIGGER IF EXISTS`` guards against races.
+
 1.12.0 (2026-06-13)
 -------------------
 

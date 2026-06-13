@@ -173,14 +173,26 @@ class TriggerSet(base.TriggerSet):
     def drop_atomic(self):
         qn = self.connection.ops.quote_name
         cursor = self.cursor()
+        # denorm names its triggers ``d_{aft,bef}_row_{ins,upd,del}_on_<table>``
+        # (see base.Trigger.name / triggers.Trigger.name), optionally with
+        # content-type and function suffixes. The historical ``denorm_%`` LIKE
+        # matched NONE of them, so drop_triggers() was a silent no-op and stale
+        # triggers survived across upgrades that rename triggers (e.g. the
+        # 1.11 -> 1.12 self-trigger rename) — install only overwrites
+        # same-named triggers, so an orphan with a baked content_type lingers
+        # and breaks once content-type ids drift. Match the real naming (plus
+        # the legacy ``denorm_%`` prefix, for very old installs) so a
+        # drop+install genuinely rebuilds the whole set. The regex is specific
+        # enough not to touch application triggers.
         cursor.execute(
             "SELECT pg_class.relname, pg_trigger.tgname FROM pg_trigger "
             "LEFT JOIN pg_class ON (pg_trigger.tgrelid = pg_class.oid) "
-            "WHERE pg_trigger.tgname LIKE 'denorm_%%';"
+            "WHERE pg_trigger.tgname LIKE 'denorm_%%' "
+            "   OR pg_trigger.tgname ~ '^d_(aft|bef)_row_(ins|upd|del)_on_';"
         )
         for table_name, trigger_name in cursor.fetchall():
             cursor.execute(
-                "DROP TRIGGER %s ON %s;" % (qn(trigger_name), qn(table_name))
+                "DROP TRIGGER IF EXISTS %s ON %s;" % (qn(trigger_name), qn(table_name))
             )
 
     def drop(self):

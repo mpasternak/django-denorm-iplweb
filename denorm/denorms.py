@@ -28,6 +28,7 @@ from django.db.models.sql.datastructures import Join
 from django.db.models.sql.query import Query
 from django.db.models.sql.where import WhereNode
 
+from denorm.helpers import content_type_select_sql
 from denorm.retry import retry_on_serialization_failure
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,10 @@ class CallbackDenorm(BaseCallbackDenorm):
         content_type = str(
             contenttypes.models.ContentType.objects.get_for_model(self.model).pk
         )
+        # Resolved at trigger-fire time so a renumbered content-type table
+        # (e.g. TransactionTestCase teardown) can't strand the marker insert
+        # against a stale id — see helpers.content_type_select_sql.
+        content_type_value = content_type_select_sql(self.model)
 
         # Self-triggers exist because a row may change without the ORM
         # running pre_save (bulk update, raw SQL). They insert PER-FUNCTION
@@ -180,7 +185,7 @@ class CallbackDenorm(BaseCallbackDenorm):
             model=DirtyInstance,
             columns=("content_type_id", "object_id", "func_name"),
             values=(
-                content_type,
+                content_type_value,
                 "NEW.%s" % qn(self.model._meta.pk.get_attname_column()[1]),
                 # _qv: func.__name__ is a Python identifier — safe to inline.
                 _qv(self.func.__name__),
