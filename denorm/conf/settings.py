@@ -39,3 +39,11 @@ DENORM_QUEUE_CHUNK_SIZE = getattr(settings, "DENORM_QUEUE_CHUNK_SIZE", 50)
 # cascade markers created during processing) before aborting with an error log.
 # Bounds a non-deterministic denorm so the chord cannot re-dispatch forever.
 DENORM_MAX_QUEUE_PASSES = getattr(settings, "DENORM_MAX_QUEUE_PASSES", 100)
+
+# Test-only: when True, denorm flushes synchronously after each signalled
+# write (post_save/post_delete/m2m_changed), so denorm fields — including those
+# on dependent objects and same-model chains — are correct immediately without
+# a manual denorm.flush(). Mirrors Celery's task_always_eager. NOT for
+# production (reintroduces synchronous coupling); default off keeps the
+# deferred model. See denorm/eager.py.
+DENORM_ALWAYS_EAGER = getattr(settings, "DENORM_ALWAYS_EAGER", False)

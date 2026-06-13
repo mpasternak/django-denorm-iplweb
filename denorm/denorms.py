@@ -32,6 +32,17 @@ from denorm.retry import retry_on_serialization_failure
 
 logger = logging.getLogger(__name__)
 
+# Thread-local guard set while flush_single is recomputing an object.
+# @denorm_always_dirty consults flush_in_progress() so that flush's OWN
+# recompute save() does NOT re-mark the object dirty (which would prevent
+# flush from ever converging for an always-dirty model).
+_flush_state = threading.local()
+
+
+def flush_in_progress():
+    """True while the current thread is inside flush_single's recompute save."""
+    return getattr(_flush_state, "active", False)
+
 
 def many_to_many_pre_save(sender, instance, **kwargs):
     """
@@ -1051,24 +1062,36 @@ def flush_single(content_type_id, object_id, content_type=None):
         #
         # Scope discipline: the re-claim filters to THIS (ct, oid) only;
         # cascade markers for OTHER objects are left for the normal flush path.
-        for passes_left in range(settings.DENORM_MAX_CONVERGE_PASSES, 0, -1):
-            obj.save(
-                **_build_save_kwargs(
-                    obj,
-                    func_names,
-                    disable_autotime_during_flush,
-                    autotime_field_names,
+        #
+        # Guard window: while we call obj.save() to recompute, set the
+        # flush-in-progress flag so @denorm_always_dirty's post_save handler
+        # does NOT re-mark this object (otherwise flush would never converge
+        # for an always-dirty model). Save/restore the previous value so the
+        # retry decorator's re-invocation, nested calls, and the early-return
+        # paths above (which never reach here) all behave correctly.
+        prev_flush_active = getattr(_flush_state, "active", False)
+        _flush_state.active = True
+        try:
+            for passes_left in range(settings.DENORM_MAX_CONVERGE_PASSES, 0, -1):
+                obj.save(
+                    **_build_save_kwargs(
+                        obj,
+                        func_names,
+                        disable_autotime_during_flush,
+                        autotime_field_names,
+                    )
                 )
-            )
-            if passes_left == 1:
-                # Cap reached: do NOT re-claim. Any markers our last save
-                # inserted (non-deterministic denorm functions, or a chain
-                # deeper than the cap) stay in the table and are handled by
-                # flush()'s outer loop, bounded by DENORM_MAX_FLUSH_PASSES.
-                break
-            func_names = _claim_and_delete_markers(content_type.pk, object_id)
-            if not func_names:
-                break
+                if passes_left == 1:
+                    # Cap reached: do NOT re-claim. Any markers our last save
+                    # inserted (non-deterministic denorm functions, or a chain
+                    # deeper than the cap) stay in the table and are handled by
+                    # flush()'s outer loop, bounded by DENORM_MAX_FLUSH_PASSES.
+                    break
+                func_names = _claim_and_delete_markers(content_type.pk, object_id)
+                if not func_names:
+                    break
+        finally:
+            _flush_state.active = prev_flush_active
 
 
 def flush(

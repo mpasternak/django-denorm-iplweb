@@ -38,6 +38,12 @@ Changelog
   claim time. Previously, the unique-index dedup could silently swallow
   concurrent invalidation markers inserted between the claim and the
   delete, permanently losing them until the next full rebuild.
+* fix: merged triggers now union their watched-column lists. When two
+  triggers collided on a name, ``TriggerSet.append`` merged only the
+  newcomer's actions and kept the existing trigger's watch-list, silently
+  dropping any column watched solely by the newcomer; a change to that
+  column would not fire the trigger, causing latent missed invalidation
+  (stale data). The watch-lists are now unioned (harmless over-fire).
 * feature: ``@depend_on_fields(*names)`` — declarative same-model
   dependencies for ``@denormalized`` functions. A declared function gets
   a targeted per-function database trigger that fires only when a
@@ -57,6 +63,18 @@ Changelog
   ``rebuildall``/``rebuild_instances_of`` produce NULL markers now.
 * feature: ``denorm.mark_dirty(*instances)`` — explicitly marks whole
   objects dirty (NULL markers).
+* feature: ``@denorm.denorm_always_dirty`` model class decorator — every
+  user ``save()`` of the decorated model unconditionally inserts a
+  ``func_name=NULL`` dirty marker, guaranteeing that all its denormalized
+  fields are recomputed by the next ``flush()``.  ``flush()`` converges
+  normally: it recomputes and clears the marker, and its own recompute save
+  does not re-mark the object (a thread-local flush-in-progress guard).
+  Intended for denorms whose value depends on inputs the trigger /
+  ``@depend_on_related`` / ``@depend_on_fields`` system cannot express
+  (external state, time-based values, complex cross-table reads).
+  ``QuerySet.update()`` / ``bulk_create()`` / raw SQL bypass ``post_save`` and
+  therefore bypass this decorator — use ``mark_dirty()`` explicitly for those
+  paths.
 * feature: ``DENORM_MAX_FLUSH_PASSES`` setting (default ``100``):
   ``flush()`` aborts with an error log naming the still-dirty models
   instead of looping forever when a denormalized function is
@@ -139,6 +157,11 @@ Changelog
   remaining markers fall back to the outer ``flush()`` loop (bounded by
   ``DENORM_MAX_FLUSH_PASSES``). No API change, no migration, no trigger
   SQL change (``denorm_rebuild_triggers`` is not needed for this fix).
+* perf: ORM saves drop provably-redundant self-markers (plain-column
+  same-model denorm fields) in a ``post_save`` handler, eliminating the
+  redundant ``flush()`` re-save for the common compute-from-own-columns
+  pattern.  Chain denorms (depending on another denorm field), related
+  denorms (``@depend_on_related``), and bulk/raw writes are unaffected.
 * ``denorm_flush_via_queue`` command now uses ``result.get(timeout=…)``
   instead of ``time.sleep(0.5)`` and times progress against the number
   of dispatched tasks rather than raw ``DirtyInstance`` rows. A Celery
@@ -158,6 +181,16 @@ Changelog
   ``delete_similar``, ``delete_this_and_similar``); unused
   ``denorm_queue_name`` variable in ``db/triggers.py``; unused
   ``Denorm.update()`` (spec 3.3).
+* feature: ``DENORM_ALWAYS_EAGER`` setting (default ``False``) — test-only
+  synchronous flush after every ``post_save`` / ``post_delete`` /
+  ``m2m_changed`` signal. Mirrors Celery's ``task_always_eager``: denorm
+  fields on dependent objects and same-model chains settle immediately
+  without a manual ``denorm.flush()`` call or a Celery worker. Enable
+  per-test with ``@override_settings(DENORM_ALWAYS_EAGER=True)``. **Not
+  for production** — reintroduces synchronous coupling. Bulk paths
+  (``QuerySet.update()``, ``bulk_create()``, ``bulk_update()``,
+  ``mark_dirty()``) fire no per-row signals and are not auto-flushed; call
+  ``denorm.flush()`` explicitly after bulk writes.
 
 1.11.1
 ------
