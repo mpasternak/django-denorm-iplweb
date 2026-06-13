@@ -264,7 +264,26 @@ class TriggerSet(object):
         for trigger in triggers:
             name = trigger.name()
             if name in self.triggers:
-                self.triggers[name].append(trigger.actions)
+                existing = self.triggers[name]
+                existing.append(trigger.actions)
+                # Defensive union of the change-detection watch-lists (audit
+                # #3). Two triggers collide on a name only when they share
+                # table/time/event/content_type/func, so their actions insert
+                # the SAME (content_type, object_id, func) marker. Keeping only
+                # the existing trigger's ``self.fields`` (the WHEN clause)
+                # silently DROPS any column watched only by the newcomer ->
+                # under-fire -> missed invalidation -> stale data. Unioning the
+                # watch-lists turns that under-fire into a harmless over-fire
+                # (the same marker is inserted on a few more column changes;
+                # flush is idempotent). Preserve the existing order, then append
+                # the newcomer's columns that aren't already watched (dedup by
+                # attname). Only the change-detection ``fields`` are merged;
+                # content-type conditions (content_type_field) are left alone.
+                seen = {f[0] for f in existing.fields}
+                for field in trigger.fields:
+                    if field[0] not in seen:
+                        existing.fields.append(field)
+                        seen.add(field[0])
             else:
                 self.triggers[name] = trigger
 

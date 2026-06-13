@@ -10,6 +10,12 @@ Changelog
   claim time. Previously, the unique-index dedup could silently swallow
   concurrent invalidation markers inserted between the claim and the
   delete, permanently losing them until the next full rebuild.
+* fix: merged triggers now union their watched-column lists. When two
+  triggers collided on a name, ``TriggerSet.append`` merged only the
+  newcomer's actions and kept the existing trigger's watch-list, silently
+  dropping any column watched solely by the newcomer; a change to that
+  column would not fire the trigger, causing latent missed invalidation
+  (stale data). The watch-lists are now unioned (harmless over-fire).
 * feature: ``@depend_on_fields(*names)`` — declarative same-model
   dependencies for ``@denormalized`` functions. A declared function gets
   a targeted per-function database trigger that fires only when a
@@ -111,6 +117,11 @@ Changelog
   remaining markers fall back to the outer ``flush()`` loop (bounded by
   ``DENORM_MAX_FLUSH_PASSES``). No API change, no migration, no trigger
   SQL change (``denorm_rebuild_triggers`` is not needed for this fix).
+* perf: ORM saves drop provably-redundant self-markers (plain-column
+  same-model denorm fields) in a ``post_save`` handler, eliminating the
+  redundant ``flush()`` re-save for the common compute-from-own-columns
+  pattern.  Chain denorms (depending on another denorm field), related
+  denorms (``@depend_on_related``), and bulk/raw writes are unaffected.
 * ``denorm_flush_via_queue`` command now uses ``result.get(timeout=…)``
   instead of ``time.sleep(0.5)`` and times progress against the number
   of dispatched tasks rather than raw ``DirtyInstance`` rows. A Celery
