@@ -172,6 +172,35 @@ Your fields won't get updated immediately after making changes to some data.
 Instead potentially affected rows are marked as dirty in a special table and the
 update will be done by the ``denorm.flush`` method.
 
+.. note::
+
+   **Plain-column same-model fields skip the flush re-save.**  When a
+   ``@denormalized`` field is a pure function of the row's own plain
+   (non-denormalized) columns — for example ``full_name`` computed from
+   ``first_name`` and ``last_name`` declared with
+   ``@depend_on_fields("first_name", "last_name")`` — ``Field.pre_save()``
+   already computes the correct value during the ``save()`` call.  The
+   database trigger still inserts a dirty marker (it cannot tell an ORM save
+   from a ``QuerySet.update()``), but a ``post_save`` handler drops that
+   marker immediately, so ``flush()`` never performs a redundant re-save for
+   such fields.
+
+   This optimisation applies only when all three conditions hold: (1) every
+   dependency is a plain, non-denormalized column of the same model, (2) no
+   ``@depend_on_related`` is attached, and (3) the field was actually
+   recomputed by the save (full save, or the field name is in
+   ``update_fields``).
+
+   **Chain denorms** (e.g. ``letterhead`` that depends on the denorm field
+   ``full_name``) and **related denorms** (``@depend_on_related``) are
+   deliberately excluded — their in-memory value may be order-sensitive or
+   stale relative to the database — so their markers remain and ``flush()``
+   settles them normally.
+
+   **Bulk and raw writes** (``QuerySet.update()``, ``bulk_create``, raw SQL)
+   fire no ``post_save`` signal, so their markers are never touched by this
+   handler; ``flush()`` still settles them as before.
+
 Post-request flushing
 ^^^^^^^^^^^^^^^^^^^^^
 
