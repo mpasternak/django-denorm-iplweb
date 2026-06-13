@@ -10,6 +10,8 @@ Decorators
 
 .. autofunction:: denorm.depend_on_related(othermodel,foreign_key=None,type=None)
 
+.. autofunction:: denorm.denorm_always_dirty
+
 Fields
 ======
 
@@ -158,6 +160,62 @@ Same-model dependencies: ``depend_on_fields``
    takes precedence over field-level markers during flush. The library's
    own triggers never emit NULL; only ``mark_dirty`` and
    ``rebuildall``/``rebuild_instances_of`` do.
+
+
+``@denorm_always_dirty`` model decorator
+========================================
+
+.. function:: denorm.denorm_always_dirty(model)
+
+   Class decorator that connects a ``post_save`` signal handler to ``model``.
+   On every ``save()`` call, a ``func_name=NULL`` dirty marker is inserted for
+   the saved instance, causing **all** denormalized fields of that object to be
+   recomputed by the next :func:`~denorm.flush`.
+
+   **Use case** — denormalized fields whose correctness depends on inputs the
+   trigger / ``@depend_on_related`` / ``@depend_on_fields`` system cannot
+   express: external state, time-based values, complex cross-table reads, or
+   anything that changes independently of the model's own columns.  The
+   decorator guarantees a recompute on every ``save()``, regardless of which
+   columns changed.
+
+   **Contrast with the self-trigger** — the self-trigger fires only on INSERT
+   and on UPDATE when a *watched* column changes.  ``@denorm_always_dirty``
+   fires on *every* ``save()``, even when only an unrelated column was written.
+
+   Example::
+
+       from denorm import denorm_always_dirty, denormalized, depend_on_fields
+
+       @denorm_always_dirty
+       class Report(models.Model):
+           title = models.CharField(max_length=100)
+           # `extra` is not a denorm dependency, but a save() of it still
+           # queues a recompute of `heading`.
+           extra = models.CharField(max_length=100, default="")
+
+           @denormalized(models.CharField, max_length=120)
+           @depend_on_fields("title")
+           def heading(self):
+               return f"Report: {self.title}"
+
+   .. warning::
+
+      **post_save only.** The handler does **not** fire for
+      ``QuerySet.update()`` / ``bulk_create()`` / raw SQL.  For those paths,
+      call :func:`~denorm.mark_dirty` explicitly or run
+      ``manage.py denorm_rebuild`` afterwards.
+
+   .. note::
+
+      Because ``flush()`` internally calls ``save()`` to write the recomputed
+      values, the decorator re-inserts a NULL marker after each flush pass.
+      This means models decorated with ``@denorm_always_dirty`` are
+      *perpetually* in the dirty queue (one marker per object, re-inserted
+      every flush).  The field value is always correct after each ``flush()``
+      call — the residual marker just schedules another recompute on the next
+      call.  This is intentional: the decorator is meant for fields that must
+      be recomputed unconditionally.
 
 
 Settings

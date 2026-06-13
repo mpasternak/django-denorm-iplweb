@@ -9,7 +9,7 @@ except ImportError:
 from django.contrib import contenttypes
 from django.core.cache import cache
 
-from denorm import CacheKeyField, CountField, cached, denormalized, depend_on_fields, depend_on_related
+from denorm import CacheKeyField, CountField, cached, denorm_always_dirty, denormalized, depend_on_fields, depend_on_related
 from denorm.fields import SumField
 
 settings.DENORM_MODEL = "test_app.RealDenormModel"
@@ -382,3 +382,22 @@ class UndeclaredProfile(models.Model):
     @denormalized(models.CharField, max_length=101)
     def full_name(self):
         return f"{self.first_name} {self.last_name}"
+
+
+@denorm_always_dirty
+class AlwaysDirtyModel(models.Model):
+    """Test model for @denorm_always_dirty.
+
+    `greeting` depends only on `first_name` (via @depend_on_fields).
+    `note` is an unrelated column — saving it alone would NOT trigger the
+    self-trigger, but @denorm_always_dirty ensures a NULL marker is
+    inserted on every save(), causing greeting to be recomputed.
+    """
+
+    first_name = models.CharField(max_length=50)
+    note = models.CharField(max_length=50, default="")  # unrelated to the denorm
+
+    @denormalized(models.CharField, max_length=60)
+    @depend_on_fields("first_name")
+    def greeting(self):
+        return f"Hi {self.first_name}"

@@ -172,6 +172,26 @@ Your fields won't get updated immediately after making changes to some data.
 Instead potentially affected rows are marked as dirty in a special table and the
 update will be done by the ``denorm.flush`` method.
 
+When a denormalized field depends on data the trigger / ``@depend_on_related`` /
+``@depend_on_fields`` system cannot track (external state, time-based values,
+complex cross-table reads), decorate the model with ``@denorm_always_dirty``::
+
+    from denorm import denorm_always_dirty, denormalized, depend_on_fields
+
+    @denorm_always_dirty
+    class Report(models.Model):
+        title = models.CharField(max_length=100)
+
+        @denormalized(models.CharField, max_length=120)
+        @depend_on_fields("title")
+        def heading(self):
+            return f"Report: {self.title}"
+
+Every ``save()`` of the model unconditionally inserts a whole-object dirty
+marker so that ``flush()`` recomputes all denormalized fields, even when no
+watched column changed.  See the :ref:`reference` for the full details and the
+``QuerySet.update()`` / ``bulk_create()`` caveat.
+
 Post-request flushing
 ^^^^^^^^^^^^^^^^^^^^^
 
