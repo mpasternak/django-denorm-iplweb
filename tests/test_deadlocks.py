@@ -230,19 +230,26 @@ def test_concurrent_flush_under_app_write_load(
 def test_dirty_markers_inserted_during_flush_are_not_wiped(
     transactional_db, denorm_triggers, thread_runner
 ):
-    """flush_single's `res.delete()` deletes by (content_type_id, object_id),
-    so any DirtyInstance row inserted by a CONCURRENT transaction between the
-    initial SELECT FOR UPDATE and the final DELETE is wiped without ever
-    being processed → silent data inconsistency.
+    """A DirtyInstance row inserted by a CONCURRENT transaction during
+    flush_single must NOT be silently wiped without being processed.
+
+    Two valid outcomes (both honor the invalidation):
+      1. The marker survives flush_single and is handled by a later pass
+         (old single-save behavior); OR
+      2. The convergence loop (spec 2.5) re-claims the now-committed marker
+         and recomputes from the same committed state — the marker is gone
+         BECAUSE it was serviced (an extra save ran for it), not wiped.
+
+    The original bug (res.delete() deleting by (content_type_id, object_id)
+    and wiping unclaimed rows) is excluded by both: this test asserts the
+    sentinel marker was either left intact or consumed-with-recompute.
 
     Reproducer:
       Thread A:
         - Has DirtyInstance(Forum=F) marker
         - Starts flush_single(F): locks DirtyInstance rows, locks F row,
-          calls F.save() (slow — we widen the window with a sentinel column
-          update that takes time).
-        - Before res.delete(), Thread B inserts a NEW DirtyInstance(F).
-        - Thread A's res.delete() wipes both, losing Thread B's marker.
+          calls F.save() (slow — we widen the window).
+        - Thread B inserts a NEW DirtyInstance(F) during the save.
 
       Thread B:
         - Waits until A is inside obj.save(), then INSERTs a fresh
@@ -270,11 +277,16 @@ def test_dirty_markers_inserted_during_flush_are_not_wiped(
     # Monkey-patch Forum.save to widen the window between SELECT FOR UPDATE
     # and res.delete() in flush_single, AND signal Thread B.
     original_save = Forum.save
+    save_calls = []
 
     def slow_save(self, *args, **kwargs):
         result = original_save(self, *args, **kwargs)
-        inside_save.set()
-        can_continue.wait(timeout=10)
+        save_calls.append(1)
+        if not inside_save.is_set():
+            # Only widen the window on the FIRST save (the convergence loop
+            # may run additional saves to service the concurrent marker).
+            inside_save.set()
+            can_continue.wait(timeout=10)
         return result
 
     Forum.save = slow_save
@@ -306,10 +318,19 @@ def test_dirty_markers_inserted_during_flush_are_not_wiped(
         surviving = DirtyInstance.objects.filter(
             content_type=forum_ct, object_id=forum.pk, func_name=sentinel_func_name
         ).count()
-        assert surviving == 1, (
-            "res.delete() wiped a DirtyInstance inserted by a CONCURRENT "
-            "transaction during flush_single → silently lost dirty marker."
-        )
+        # Either the marker survived for a later pass (1), or the convergence
+        # loop consumed it (0) — in which case an EXTRA save must have run to
+        # service it (proof it was recomputed, not silently wiped).
+        if surviving == 0:
+            assert len(save_calls) >= 2, (
+                "Concurrent marker was deleted WITHOUT a recompute → silently "
+                f"lost dirty marker (save_calls={len(save_calls)})."
+            )
+        else:
+            assert surviving == 1, (
+                "res.delete() wiped a DirtyInstance inserted by a CONCURRENT "
+                "transaction during flush_single → silently lost dirty marker."
+            )
     finally:
         Forum.save = original_save
 

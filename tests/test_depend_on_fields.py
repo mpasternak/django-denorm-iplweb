@@ -152,6 +152,8 @@ class TestPerFunctionSelfTriggers:
     def test_flush_recomputes_only_the_marked_field(
         self, transactional_db, denorm_triggers
     ):
+        from unittest.mock import patch
+
         from test_app.models import Profile
 
         from denorm import denorms
@@ -161,21 +163,44 @@ class TestPerFunctionSelfTriggers:
         denorms.flush()
         DirtyInstance.objects.all().delete()
 
-        # Corrupt letterhead's column directly (no trigger watches it),
-        # then dirty ONLY full_name via its declared source column.
+        # Corrupt letterhead's column directly (no trigger watches it), then
+        # dirty ONLY full_name via its declared source column. We then verify
+        # the FIRST save services full_name with a TARGETED update_fields.
         Profile.objects.filter(pk=p.pk).update(letterhead="SENTINEL")
         assert not DirtyInstance.objects.exists()
         Profile.objects.filter(pk=p.pk).update(last_name="Smith")
 
         ct = ContentType.objects.get_for_model(Profile)
-        denorms.flush_single(ct.pk, p.pk, ct)
 
+        save_kwargs = []
+        orig = Profile.save
+
+        def recording_save(self, *a, **k):
+            save_kwargs.append(k.get("update_fields"))
+            return orig(self, *a, **k)
+
+        with patch.object(Profile, "save", recording_save):
+            denorms.flush_single(ct.pk, p.pk, ct)
+
+        # The FIRST save services the 'full_name' marker and MUST be targeted
+        # (update_fields=['full_name']) — targeted markers mean targeted saves,
+        # so it does NOT rewrite letterhead on that pass.
+        assert save_kwargs[0] == ["full_name"], (
+            "first save for a 'full_name' marker must be "
+            f"update_fields=['full_name']; got {save_kwargs[0]}"
+        )
+
+        # full_name changed (Doe -> Smith), so its column UPDATE cascades a
+        # 'letterhead' marker which the convergence loop then recomputes — a
+        # SECOND, targeted letterhead save. SENTINEL is correctly overwritten
+        # because letterhead's genuine dependency (full_name) changed.
+        assert save_kwargs[1] == ["letterhead"], (
+            "second save must service the cascaded 'letterhead' marker; "
+            f"got {save_kwargs[1]}"
+        )
         p.refresh_from_db()
         assert p.full_name == "John Smith"
-        assert p.letterhead == "SENTINEL", (
-            "flush_single(update_fields=['full_name']) must not rewrite the "
-            "letterhead column — targeted markers mean targeted saves."
-        )
+        assert p.letterhead == "Dear John Smith"
 
     def test_chain_cascades_and_full_flush_converges(
         self, transactional_db, denorm_triggers
@@ -192,14 +217,18 @@ class TestPerFunctionSelfTriggers:
         Profile.objects.filter(pk=p.pk).update(last_name="Smith")
         ct = ContentType.objects.get_for_model(Profile)
 
-        # First targeted flush changes the full_name COLUMN, whose trigger
-        # must cascade a 'letterhead' marker (its key is unclaimed, so it
-        # lands even before the delete-at-claim fix).
+        # flush_single changes the full_name COLUMN, whose trigger cascades a
+        # 'letterhead' marker for the SAME object. With the convergence loop
+        # (spec 2.5) that marker is re-claimed and recomputed IN THE SAME
+        # transaction, so the chain settles in one flush_single — no leftover
+        # marker for an outer pass.
         denorms.flush_single(ct.pk, p.pk, ct)
         cascade = set(_markers(Profile, p.pk).values_list("func_name", flat=True))
-        assert "letterhead" in cascade
+        assert cascade == set(), (
+            "convergence loop should settle the full_name -> letterhead chain "
+            f"in one flush_single, leaving no markers; got {cascade}"
+        )
 
-        denorms.flush()
         p.refresh_from_db()
         assert p.full_name == "John Smith"
         assert p.letterhead == "Dear John Smith"

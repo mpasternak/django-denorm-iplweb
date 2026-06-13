@@ -190,6 +190,20 @@ task — safe because ``flush_single`` uses ``skip_locked`` claims.
 Celery task dispatched by ``flush_via_queue``. Increase if your broker or
 worker startup overhead dominates; decrease for finer progress granularity.
 
+``DENORM_MAX_CONVERGE_PASSES`` (default ``5``): per-object convergence pass
+cap inside ``flush_single``. After each ``save()`` call, ``flush_single``
+checks whether the save's own triggers inserted new markers for the same
+``(content_type_id, object_id)`` pair (same-model denorm chains, e.g.
+``full_name`` → ``letterhead``), and if so, processes them immediately in
+the same transaction instead of deferring them to the next outer ``flush()``
+pass. This setting caps the number of such inner iterations. On reaching the
+cap, any remaining markers are left in the table and handled by the outer
+``flush()`` loop (itself bounded by ``DENORM_MAX_FLUSH_PASSES``). The default
+of ``5`` is above any realistic same-model chain depth; increase it only if
+you have intentionally deep same-model chains. Degraded behavior (hitting the
+cap) equals today's pre-1.12.0 behavior: correct eventual convergence, just
+with extra outer passes.
+
 
 Running the tests
 =================

@@ -351,14 +351,20 @@ keep passing — the chunk task still keys on logical pairs, not marker pks.
 `flush_single` task as a thin wrapper for one release to drain in-flight
 queues during deploy.
 
-### 2.5 Collapse the self-trigger extra pass: converge inside `flush_single`
+### ✅ SHIPPED (1.12.0) — 2.5 Collapse the self-trigger extra pass: converge inside `flush_single`
 
-> **Status: OPEN.** This item remains unimplemented and needs a fresh design
-> pass now that per-function markers are in place (1.12.0). With
-> `@depend_on_fields`, fresh same-object markers produced inside the
-> convergence loop carry specific `func_name` values rather than NULL, so the
-> loop iterations can stay targeted instead of escalating to full saves. The
-> design must be revisited with that in mind before implementation.
+> **Full design:** `docs/superpowers/specs/2026-06-13-flush-convergence-loop-design.md`
+> (supersedes the original sketch below; covers per-function marker semantics,
+> concurrency safety, NOTIFY interaction, and the cap-iteration correction —
+> the final iteration must skip the re-claim so overflow markers are not
+> deleted without a corresponding save).
+
+> **Status: SHIPPED (1.12.0).** The original sketch below predates
+> per-function markers (`@depend_on_fields`, 1.12.0). With those in place,
+> fresh same-object markers produced inside the convergence loop carry specific
+> `func_name` values rather than NULL, so loop iterations stay targeted
+> (`update_fields`) instead of escalating to full saves — better than
+> originally envisioned. See the design doc above for the full rationale.
 
 **Problem.** When a flush save actually changes a stored value, the
 self-trigger (`CallbackDenorm`) inserts a fresh `(ct, oid, func_name=NULL)`
