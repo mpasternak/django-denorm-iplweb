@@ -1,4 +1,6 @@
 # Django settings for test_project project.
+import os
+
 DEBUG = True
 TEST_RUNNER = "django.test.runner.DiscoverRunner"
 
@@ -134,4 +136,7 @@ LOGGING = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 
-CELERY_ALWAYS_EAGER = True
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_BROKER_URL = os.getenv("DENORM_TEST_REDIS_URL", "memory://")
+CELERY_RESULT_BACKEND = os.getenv("DENORM_TEST_REDIS_URL", "cache+memory://")

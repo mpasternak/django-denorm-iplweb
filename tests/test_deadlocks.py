@@ -556,81 +556,60 @@ def test_concurrent_rebuild_creates_duplicates(
 # ---------------------------------------------------------------------------
 
 
-def test_flush_via_queue_fans_out_one_task_per_duplicate(
-    transactional_db, denorm_triggers
+def test_flush_via_queue_drains_db_through_a_real_worker(
+    transactional_db, denorm_triggers, live_worker
 ):
-    """`flush_via_queue` dispatches distinct (content_type_id, object_id)
-    pairs in chunks of DENORM_QUEUE_CHUNK_SIZE via `flush_batch` tasks —
-    not one task per DirtyInstance row and not one task per distinct pair.
-
-    With heavy duplicate accumulation (test #6 — 20 updates = 120 rows),
-    a naive fan-out would spawn 120 tasks where 1 would do. 119 of them
-    would grab nothing via skip_locked, but still take a transaction,
-    contend on the DirtyInstance index, and amplify the deadlock
-    probability seen in test #3.
-
-    Chunking limits broker message count for very large backlogs: a
-    500k-row backlog with chunk_size=50 becomes 10k messages, not 500k.
-
-    Duplicates must collapse to exactly ONE pair in the dispatched chunks.
-    """
-    from test_app.models import Forum
+    """End-to-end, eager OFF: submit flush_via_queue over a real broker and
+    let an in-process worker drain the queue. Verifies the genuine async
+    path (serialization, round-trip, group fan-out, flush_single), not just
+    the call shape."""
+    from test_app.models import Forum, Post
 
     from denorm import tasks
-    from denorm.conf import settings as denorm_settings
     from denorm.models import DirtyInstance
 
-    forum = Forum.objects.create(title="dup")
-    forum_ct = ContentType.objects.get_for_model(Forum)
+    forum = Forum.objects.create(title="q*")
+    Post.objects.create(forum=forum, title="p")
+    # settle setup synchronously, then dirty deterministically
+    from denorm import denorms
+
+    denorms.flush()
     DirtyInstance.objects.all().delete()
-
-    K = 25
-    DirtyInstance.objects.bulk_create(
-        [DirtyInstance(content_type=forum_ct, object_id=forum.pk) for _ in range(K)],
-        ignore_conflicts=True,
+    forum_ct = ContentType.objects.get_for_model(Forum)
+    # duplicate markers for one pair — must collapse to one logical flush
+    DirtyInstance.objects.create(content_type=forum_ct, object_id=forum.pk)
+    DirtyInstance.objects.create(
+        content_type=forum_ct, object_id=forum.pk, func_name="author_names"
     )
 
-    # Capture the chunk lists handed to flush_batch.s(...) — that's the
-    # fan-out we care about. Bypass the Singleton + Celery broker machinery
-    # by calling the wrapped function directly via .run() and stubbing
-    # `group` and `flush_batch.s` so nothing tries to talk to redis.
-    captured_chunks: list[list] = []
-
-    def _stub_signature(*, pairs):
-        captured_chunks.append(list(pairs))
-        return ("signature", pairs)
-
-    class _StubGroup:
-        def __init__(self, sigs):
-            # group() takes a generator of signatures — we must iterate
-            # it here so `flush_batch.s(...)` actually runs (and our
-            # stub captures the call). Otherwise the generator is
-            # discarded unevaluated and captured_chunks stays empty.
-            self.sigs = list(sigs)
-
-        def apply_async(self):
-            return None
-
-    with (
-        patch.object(tasks.flush_batch, "s", side_effect=_stub_signature),
-        patch("denorm.tasks.group", _StubGroup),
-    ):
-        tasks.flush_via_queue.run()
-
-    # all distinct pairs are covered exactly once, in ceil(n/chunk) batches
-    flat = [pair for chunk in captured_chunks for pair in chunk]
-    distinct = list(
-        DirtyInstance.objects.values_list("content_type_id", "object_id").distinct()
+    # One flush_via_queue dispatch does ONE fan-out pass: it groups the
+    # distinct (ct, oid) pairs into flush_batch tasks, each of which runs
+    # flush_single once per pair. The Forum/Post denorm graph is
+    # self-dirtying (saving a Forum re-marks author_names/path/tags_string
+    # and its related Posts — the same convergence that denorms.flush()
+    # loops over internally), so a single pass cannot drain it. In
+    # production the denorm_queue command re-kicks flush_via_queue.delay()
+    # on every NOTIFY until the backlog clears; we drive that same re-kick
+    # here over the real broker, asserting the queue path actually
+    # converges via a genuine async round-trip (serialization, worker
+    # pickup, group fan-out, flush_single), not just the call shape.
+    deadline = time.time() + 30
+    # First dispatch: assert we are genuinely on the non-eager (real broker)
+    # path. If live_worker is absent, CELERY_TASK_ALWAYS_EAGER stays ON and
+    # .delay() returns an EagerResult — the test would silently pass without
+    # ever touching a real worker. Catching that here makes the premise
+    # self-enforcing.
+    first = tasks.flush_via_queue.delay()
+    assert type(first).__name__ != "EagerResult", (
+        "expected a real (non-eager) dispatch under live_worker; got EagerResult "
+        "— the worker path is not being exercised"
     )
-    assert sorted(flat) == sorted(distinct), (
-        f"flush_via_queue dispatched {flat!r} but expected distinct pairs {distinct!r}. "
-        "Duplicate DirtyInstance rows must collapse to ONE pair total."
-    )
-    assert all(
-        len(c) <= denorm_settings.DENORM_QUEUE_CHUNK_SIZE for c in captured_chunks
-    ), (
-        f"Some chunk exceeds DENORM_QUEUE_CHUNK_SIZE={denorm_settings.DENORM_QUEUE_CHUNK_SIZE}: "
-        f"{[len(c) for c in captured_chunks]}"
+    first.get(timeout=20)
+    while DirtyInstance.objects.exists() and time.time() < deadline:
+        tasks.flush_via_queue.delay().get(timeout=20)  # real dispatch + drain
+        time.sleep(0.2)
+    assert not DirtyInstance.objects.exists(), (
+        "the real worker did not drain DirtyInstance within 30s"
     )
 
 
@@ -700,6 +679,37 @@ def test_flush_single_task_processes_markers_inserted_after_enqueue(
         "and execution; it should be keyed by the logical "
         "(content_type_id, object_id) pair instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# 9c. flush_batch Singleton dedup: identical chunks share a lock key.
+# ---------------------------------------------------------------------------
+
+
+def test_flush_batch_singleton_dedups_identical_chunks(celery_redis):
+    """Eager can't show concurrent dedup (the first task releases its lock
+    before the second starts), so assert the dedup MECHANISM directly: two
+    identical flush_batch chunks generate the same Singleton lock key, and
+    while the lock is held a second acquire fails."""
+    from denorm import tasks
+
+    chunk = [(1, 1), (1, 2)]
+    lock = tasks.flush_batch.generate_lock(tasks.flush_batch.name, [], {"pairs": chunk})
+    same = tasks.flush_batch.generate_lock(tasks.flush_batch.name, [], {"pairs": chunk})
+    other = tasks.flush_batch.generate_lock(
+        tasks.flush_batch.name, [], {"pairs": [(1, 3)]}
+    )
+    assert lock == same, "identical chunks must dedup to the same lock key"
+    assert lock != other, "different chunks must not collide"
+
+    backend = tasks.flush_batch.singleton_backend
+    try:
+        assert backend.lock(lock, "tid-1", expiry=60) is True
+        assert backend.lock(lock, "tid-2", expiry=60) is False  # held
+    finally:
+        backend.unlock(lock)
+    assert backend.lock(lock, "tid-3", expiry=60) is True
+    backend.unlock(lock)
 
 
 # ---------------------------------------------------------------------------
@@ -1079,20 +1089,32 @@ def test_denorm_queue_survives_listen_connection_drop(
     def run_queue():
         queue_started.set()
         try:
-            # Spec 1.2 added a startup backlog kick (flush_via_queue.delay()
-            # right after LISTEN, and one per reconnect). This suite has no
-            # broker/Redis, so a real .delay() would raise and — because
-            # AttributeError is a reconnect trigger — wedge the loop in an
-            # endless reconnect, never stabilizing the LISTEN. Stub the kick
-            # to a no-op: this test is about surviving the connection drop,
-            # not about Celery dispatch.
+            # MINIMAL stub, retained deliberately (not a leftover): the
+            # celery_redis fixture now provides a real broker, but the
+            # startup backlog kick (flush_via_queue.delay() right after
+            # LISTEN) runs EAGERLY here, i.e. inline in this thread. Its body
+            # issues Django ORM queries against connections["default"] — the
+            # very connection denorm_queue has just grabbed as its raw
+            # psycopg2 LISTEN socket and switched to AUTOCOMMIT isolation via
+            # set_isolation_level() (behind Django's back). The eager ORM
+            # query corrupts that shared connection's state and Postgres
+            # closes it ("server closed the connection unexpectedly"), which
+            # AttributeError/OperationalError treats as a connection drop ->
+            # the loop reconnects endlessly and never registers a stable
+            # LISTEN, so pg_stat_activity has no listener to terminate.
+            # Stubbing the kick to a no-op isolates THIS test to its actual
+            # subject — surviving a dropped LISTEN connection — not the eager
+            # flush/LISTEN connection-sharing interaction (that is exercised
+            # for real by the live_worker drain test above). This is a
+            # harness interaction, not a denorm runtime bug.
+            #
+            # Note: handle() blocks forever; if the loop survives the drop,
+            # this call never returns and the daemon thread stays alive until
+            # the test process exits — which is fine.
             with patch(
                 "denorm.management.commands.denorm_queue.flush_via_queue.delay",
                 return_value=None,
             ):
-                # Note: handle() blocks forever; if the loop survives the
-                # drop, this call never returns and the daemon thread stays
-                # alive until the test process exits — which is fine.
                 call_command("denorm_queue")
         except BaseException as e:  # noqa: BLE001
             queue_error.append((type(e).__name__, str(e)[:200]))

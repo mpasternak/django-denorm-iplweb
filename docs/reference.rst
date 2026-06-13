@@ -191,6 +191,41 @@ Celery task dispatched by ``flush_via_queue``. Increase if your broker or
 worker startup overhead dominates; decrease for finer progress granularity.
 
 
+Running the tests
+=================
+
+**Docker required.** The test suite spins two containers automatically:
+
+* A **PostgreSQL** container (via ``testcontainers``) for the Django test
+  database — always required, as this is a PostgreSQL-only package.
+* A **Redis** container (``RedisContainer("redis:7-alpine")``) for the Celery
+  broker, result backend, and ``celery-singleton`` lock backend.
+
+Two test runners are provided:
+
+``uv run pytest tests/ -q``
+    The pytest suite (~59 tests). The ``celery_redis`` session fixture starts
+    the Redis container once, injects the URL into the live Celery app, and
+    sets ``task_always_eager = True`` so most tests run tasks inline. A small
+    number of end-to-end tests use the ``live_worker`` fixture, which flips
+    eager mode off and starts a real in-process Celery worker (``pool=solo``)
+    for genuine broker serialization, round-trip dispatch, and
+    ``flush_batch`` group fan-out. Singleton dedup is verified by direct
+    lock-backend assertions against Redis (deterministic, avoids race
+    conditions).
+
+``uv run python run_tests_tc.py``
+    The Django test runner suite (~43 tests). Starts both the Postgres and
+    Redis containers, exports ``DENORM_TEST_REDIS_URL``, then delegates to
+    ``manage.py test``.
+
+No ``DENORM_TEST_REDIS_URL`` environment variable is needed when running the
+suites through their respective runners — the containers are started and the
+variable is set automatically. To run against an existing Redis instance,
+set ``DENORM_TEST_REDIS_URL=redis://<host>:<port>/0`` before running either
+suite.
+
+
 Upgrading
 =========
 
