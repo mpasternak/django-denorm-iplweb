@@ -33,3 +33,9 @@ DENORM_SINGLETON_LOCK_EXPIRY = getattr(settings, "DENORM_SINGLETON_LOCK_EXPIRY",
 
 # Number of (content_type_id, object_id) pairs handled by one celery task.
 DENORM_QUEUE_CHUNK_SIZE = getattr(settings, "DENORM_QUEUE_CHUNK_SIZE", 50)
+
+# Queue analogue of DENORM_MAX_FLUSH_PASSES: maximum number of chord
+# re-dispatch passes flush_via_queue runs to self-converge (drain cross-object
+# cascade markers created during processing) before aborting with an error log.
+# Bounds a non-deterministic denorm so the chord cannot re-dispatch forever.
+DENORM_MAX_QUEUE_PASSES = getattr(settings, "DENORM_MAX_QUEUE_PASSES", 100)

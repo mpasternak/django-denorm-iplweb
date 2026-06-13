@@ -4,6 +4,23 @@ Changelog
 1.12.0 (unreleased)
 -------------------
 
+* perf: ``flush_via_queue`` now **self-converges** via a Celery chord.
+  Each dispatch fans the current backlog out into ``flush_batch`` tasks
+  and, when they finish, re-dispatches itself if any object was marked
+  dirty during processing (cross-object cascades) — until the
+  ``DirtyInstance`` table is empty. This mirrors the inline ``flush()``
+  convergence loop, so the queue path no longer depends on a fresh
+  ``LISTEN/NOTIFY`` to finish draining a cascade. Bounded by the new
+  ``DENORM_MAX_QUEUE_PASSES`` setting (default ``100``), the queue
+  analogue of ``DENORM_MAX_FLUSH_PASSES``.
+* perf: marker INSERTs performed *during a flush* no longer emit a NOTIFY
+  wake-up. ``flush_single`` sets a transaction-local GUC
+  (``SET LOCAL denorm.flushing = 'on'``) and migration ``0019`` guards
+  the notify trigger function with it, so only genuine writes
+  (application saves, bulk updates, raw SQL) wake the ``denorm_queue``
+  channel. This removes the wasted NOTIFY→no-op-flush churn under heavy
+  cascades. Migration ``0019`` is reversible (restores the unconditional
+  NOTIFY from ``0016``).
 * **Dropped Django 4.2 support** (extended support ended April 2026).
   Minimum is now Django 5.2 LTS. CI tests Django 5.2 and 6.0.
 * fix: ``flush_single`` now deletes claimed ``DirtyInstance`` markers at

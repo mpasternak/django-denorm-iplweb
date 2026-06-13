@@ -209,6 +209,16 @@ multiple instances of ``denorm_queue`` is not recommended. In some situations th
 perfectly doable - in some, this could easily be a source of database deadlocks. Your milleage
 may vary - proceed with caution.
 
+Since 1.12.0 the queue path **self-converges**: a single ``flush_via_queue``
+dispatch processes the current backlog as a Celery chord and, when the batches
+finish, re-dispatches itself if any objects were marked dirty *during*
+processing (cross-object cascades) — until the ``DirtyInstance`` table is
+empty, bounded by ``DENORM_MAX_QUEUE_PASSES``. This mirrors the inline
+``flush()`` convergence loop, so the queue no longer depends on a fresh NOTIFY
+to finish draining a cascade. Relatedly, marker INSERTs performed *during* a
+flush no longer emit a NOTIFY_ wake-up (only genuine application writes do),
+removing wasted NOTIFY→no-op-flush churn under heavy cascades.
+
 Final steps
 ===========
 
