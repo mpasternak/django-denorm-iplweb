@@ -1,5 +1,6 @@
 from django.conf import settings
 
+from .always_dirty import denorm_always_dirty
 from .denorms import flush, mark_dirty, rebuildall
 from .dependencies import depend_on_fields, depend_on_related
 from .fields import CacheKeyField, CountField, cached, denormalized
@@ -26,6 +27,7 @@ if (
 
 __all__ = [
     "cached",
+    "denorm_always_dirty",
     "denormalized",
     "depend_on_fields",
     "depend_on_related",
