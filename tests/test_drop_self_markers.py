@@ -1,7 +1,11 @@
 """Drop redundant self-markers on ORM saves — safety boundary tests."""
 from __future__ import annotations
 
+import threading
+import time
+
 from django.contrib.contenttypes.models import ContentType
+from django.db import connections, transaction
 
 
 def _markers(model, pk):
@@ -117,3 +121,146 @@ def test_endtoend_correctness_no_stale(transactional_db, denorm_triggers):
     p.refresh_from_db()
     assert p.full_name == "Jane Doe"
     assert p.letterhead == "Dear Jane Doe"
+
+
+# ---------------------------------------------------------------------------
+# Staged concurrency (design spec item 6): the dangerous direction.
+#
+# The safety of dropping a plain-column self-marker rests on ONE invariant:
+# a full ORM save writes ALL the plain source columns AND the denorm column
+# in a SINGLE transaction holding the row lock, so at commit the row is
+# self-consistent — and the post_save DELETE of the (now redundant) marker
+# runs in that same transaction. We stress that with a separate-connection
+# writer (pattern: tests/test_deadlocks.py).
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_marker_committed_before_save_no_stale(
+    transactional_db, denorm_triggers
+):
+    """(a) Writer COMMITS a first_name change + full_name marker BEFORE our
+    full save. Our instance loaded with the OLD in-memory first_name, so our
+    full save overwrites first_name back (last-write-wins) AND recomputes
+    full_name consistently, then drops the marker. The row MUST be
+    self-consistent immediately after our save (no stale window with no
+    marker), and a later flush keeps it consistent."""
+    from test_app.models import Profile
+
+    from denorm import denorms
+    from denorm.models import DirtyInstance
+
+    p = Profile.objects.create(first_name="John", last_name="Doe")
+    denorms.flush()
+    DirtyInstance.objects.all().delete()
+
+    # Load our instance NOW: in-memory first_name == 'John'.
+    obj = Profile.objects.get(pk=p.pk)
+
+    # Concurrent committed change + marker, behind our instance's back.
+    Profile.objects.filter(pk=p.pk).update(first_name="WRITER")
+    assert "full_name" in _markers(Profile, p.pk)
+
+    # Our full save: overwrites first_name -> 'John', full_name -> 'John Doe...'.
+    obj.last_name = "Smith"
+    obj.save()
+
+    after = Profile.objects.get(pk=p.pk)
+    assert after.full_name == f"{after.first_name} {after.last_name}", (
+        "row left inconsistent after full save (would be silent stale): "
+        f"full={after.full_name!r} first={after.first_name!r}"
+    )
+    denorms.flush()
+    final = Profile.objects.get(pk=p.pk)
+    assert final.full_name == f"{final.first_name} {final.last_name}"
+
+
+def test_concurrent_writer_serialized_after_save_marker_survives(
+    transactional_db, denorm_triggers
+):
+    """(a') Writer's first_name change is SERIALIZED AFTER our save by the row
+    lock (it blocks on our uncommitted UPDATE until we commit). Its column-
+    watch trigger then inserts a FRESH full_name marker that our already-
+    committed DELETE cannot eat. The row is momentarily inconsistent but
+    CARRIES a marker, and flush settles it. Proves no lost invalidation."""
+    from test_app.models import Profile
+
+    from denorm import denorms
+    from denorm.models import DirtyInstance
+
+    p = Profile.objects.create(first_name="John", last_name="Doe")
+    denorms.flush()
+    DirtyInstance.objects.all().delete()
+
+    go = threading.Event()
+    done = threading.Event()
+
+    def writer():
+        try:
+            go.wait(timeout=10)
+            # Blocks on our row lock until we commit, then runs + commits.
+            Profile.objects.filter(pk=p.pk).update(first_name="OTHER")
+            done.set()
+        finally:
+            for alias in connections:
+                try:
+                    connections[alias].close()
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+
+    obj = Profile.objects.get(pk=p.pk)
+    with transaction.atomic():
+        obj.last_name = "Smith"
+        obj.save()  # holds row lock; post_save drops full_name marker
+        go.set()
+        time.sleep(1.0)  # writer is blocked on our row lock here
+    # our txn committed -> writer unblocks, its UPDATE + marker land AFTER us
+    assert done.wait(timeout=10)
+    t.join(timeout=10)
+
+    after = Profile.objects.get(pk=p.pk)
+    inconsistent = after.full_name != f"{after.first_name} {after.last_name}"
+    if inconsistent:
+        # The writer's change landed after our commit -> there MUST be a fresh
+        # marker so flush can settle it. A missing marker here = stale hole.
+        assert "full_name" in _markers(Profile, p.pk), (
+            "HOLE: row inconsistent after concurrent write but no full_name "
+            f"marker (full={after.full_name!r} first={after.first_name!r})"
+        )
+    denorms.flush()
+    final = Profile.objects.get(pk=p.pk)
+    assert final.full_name == f"{final.first_name} {final.last_name}"
+
+
+def test_related_marker_never_dropped_with_concurrent_change(
+    transactional_db, denorm_triggers
+):
+    """(b) RELATED-dep func (Post.forum_title): even with a concurrent
+    committed change to the parent forum, an ORM save of the Post must NEVER
+    drop forum_title's marker; flush re-reads fresh DB state."""
+    from test_app.models import Forum, Post
+
+    from denorm import denorms
+    from denorm.models import DirtyInstance
+
+    forum = Forum.objects.create(title="Orig")
+    post = Post.objects.create(forum=forum, title="p")
+    denorms.flush()
+    DirtyInstance.objects.all().delete()
+
+    # Concurrent committed change to the forum -> marks post.forum_title.
+    Forum.objects.filter(pk=forum.pk).update(title="Changed")
+
+    # An ORM save of the Post (in-memory forum is the stale 'Orig').
+    post = Post.objects.get(pk=post.pk)
+    post.title = "p2"
+    post.save()
+
+    assert "forum_title" in _markers(Post, post.pk), (
+        "related-dependency marker must survive an ORM save of the Post"
+    )
+    denorms.flush()
+    post.refresh_from_db()
+    assert post.forum_title == "Changed"
