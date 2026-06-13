@@ -14,6 +14,9 @@ class DenormAppConfig(AppConfig):
 
     def ready(self):
         from denorm import checks  # noqa: F401 — registers system checks
+        from denorm import eager
+
+        eager.connect()
 
         if getattr(settings, "DENORM_INSTALL_TRIGGERS_AFTER_MIGRATE", True):
             post_migrate.connect(denorm_install_triggers_after_migrate, sender=self)

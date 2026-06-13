@@ -33,3 +33,11 @@ DENORM_SINGLETON_LOCK_EXPIRY = getattr(settings, "DENORM_SINGLETON_LOCK_EXPIRY",
 
 # Number of (content_type_id, object_id) pairs handled by one celery task.
 DENORM_QUEUE_CHUNK_SIZE = getattr(settings, "DENORM_QUEUE_CHUNK_SIZE", 50)
+
+# Test-only: when True, denorm flushes synchronously after each signalled
+# write (post_save/post_delete/m2m_changed), so denorm fields — including those
+# on dependent objects and same-model chains — are correct immediately without
+# a manual denorm.flush(). Mirrors Celery's task_always_eager. NOT for
+# production (reintroduces synchronous coupling); default off keeps the
+# deferred model. See denorm/eager.py.
+DENORM_ALWAYS_EAGER = getattr(settings, "DENORM_ALWAYS_EAGER", False)
