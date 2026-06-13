@@ -37,6 +37,17 @@ Functions
 
 .. autofunction:: denorm.flush
 
+.. note::
+
+   ``flush()`` automatically skips the redundant re-save for
+   ``@denormalized`` fields whose value is a pure function of the row's own
+   plain (non-denormalized) columns.  A ``post_save`` handler drops those
+   dirty markers immediately after each ORM ``save()``, so ``flush()`` only
+   processes markers that are genuinely unresolved (chain denorms, related
+   denorms, bulk/raw writes).  This optimisation is always on, requires no
+   configuration, and never changes results — it only ever removes
+   provably-redundant markers.
+
 Middleware
 ==========
 
@@ -220,6 +231,25 @@ Same-model dependencies: ``depend_on_fields``
 Settings
 ========
 
+``DENORM_ALWAYS_EAGER`` (default ``False``): **test-only**. When ``True``,
+denorm flushes synchronously after every signalled write
+(``post_save`` / ``post_delete`` / ``m2m_changed``) so denorm fields —
+including those on *dependent* objects and same-model chains — are correct
+immediately, with no manual ``denorm.flush()`` and no Celery worker.
+Mirrors Celery's ``task_always_eager``. Enable it per-test with
+``@override_settings(DENORM_ALWAYS_EAGER=True)`` (see
+:ref:`testing`).
+
+**Not for production**: it reintroduces synchronous coupling — a write that
+dirties many dependents will flush them all inline. The deferred model
+(triggers mark dirty, ``flush()`` recomputes later) is unchanged in
+production; the default is ``False``.
+
+**Bulk-write caveat**: ``QuerySet.update()`` / ``bulk_create()`` /
+``bulk_update()`` / :func:`mark_dirty` fire no per-row signals, so eager
+does **not** auto-flush those paths. The DB triggers still mark the affected
+rows dirty; call ``denorm.flush()`` explicitly after bulk writes.
+
 ``DENORM_MAX_FLUSH_PASSES`` (default ``100``): ``flush()`` aborts with an
 error log naming the still-dirty models instead of looping forever when a
 denormalized function is non-deterministic.
@@ -233,6 +263,19 @@ and ``auto_now_add`` field behaviour during flush. Since targeted flush
 saves now use ``update_fields``, this setting only has effect for
 whole-object (``func_name=NULL``) flushes triggered by :func:`mark_dirty`
 or ``rebuildall``/``rebuild_instances_of``.
+
+``DENORM_AUTOTIME_FIELD_NAMES`` (default ``[]``): the list of field names
+treated as auto-timestamp fields by
+``DENORM_DISABLE_AUTOTIME_DURING_FLUSH``. When that setting is active,
+``flush_single`` excludes these field names from the ``update_fields`` list
+so they are never touched by a denorm flush save. Unused when
+``DENORM_DISABLE_AUTOTIME_DURING_FLUSH`` is ``False``.
+
+``DENORM_BATCH_SIZE`` (default ``5000``): batch size for the
+``bulk_create`` calls that insert :class:`~denorm.models.DirtyInstance`
+markers in ``rebuild_instances_of`` (used by ``denorm_rebuild`` and
+``rebuildall``). Increase for faster rebuilds on fast storage; decrease
+if individual INSERT transactions are too large.
 
 ``DENORM_SINGLETON_LOCK_EXPIRY`` (default ``600``): TTL in seconds for the
 Redis lock held by ``celery-singleton``-based tasks (``flush_single``,
