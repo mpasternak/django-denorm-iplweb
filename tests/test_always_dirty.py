@@ -136,16 +136,15 @@ class TestAlwaysDirtyFlushRecomputes:
         obj.refresh_from_db()
         assert obj.greeting == "Hi Evelyn"
 
-    def test_flush_processes_then_decorator_reinserts(self, transactional_db, denorm_triggers):
-        """flush() processes and deletes the NULL marker, but @denorm_always_dirty
-        re-inserts a new one because flush's own save() fires post_save again.
-        This is expected: the model is permanently "always dirty" — every save
-        by anyone (including flush's save) queues a fresh recompute.
-
-        The important invariant is that flush() *does* recompute the field
-        correctly before the new marker lands (verified in test_flush_recomputes_greeting).
+    def test_flush_converges(self, transactional_db, denorm_triggers):
+        """flush() must CONVERGE for an always-dirty model: it claims and
+        deletes the NULL marker, recomputes the field, and leaves the object
+        clean. flush's own recompute save() must NOT re-insert a NULL marker
+        (the flush-in-progress guard suppresses the handler), so flush does not
+        hit the DENORM_MAX_FLUSH_PASSES safety valve.
         """
         from denorm import denorms
+        from denorm.models import DirtyInstance
         from test_app.models import AlwaysDirtyModel
 
         obj = AlwaysDirtyModel.objects.create(first_name="Frank")
@@ -153,20 +152,43 @@ class TestAlwaysDirtyFlushRecomputes:
         # Before flush: exactly one NULL marker (from create)
         assert _null_markers(AlwaysDirtyModel, obj.pk).count() == 1
 
-        # After one flush pass: the marker is claimed+deleted, field is recomputed,
-        # but flush's own save() fires post_save → a new NULL marker is inserted.
-        # Manually do a single flush pass (call denorms.flush with max_passes=1 or
-        # just verify the field was recomputed by checking the DB value).
-        # We verify the field was written, not that markers are zero (they won't be).
+        # flush() returns (does not spin until the safety valve) and the
+        # object is recomputed correctly.
         denorms.flush()
         obj.refresh_from_db()
         assert obj.greeting == "Hi Frank", (
             "flush() must have written the correct greeting value"
         )
-        # A new marker will exist because flush's save() triggered post_save again
+
+        # Converged: NO marker left for this object — neither the NULL marker
+        # nor any field-level marker. flush's own save() did not re-mark it.
+        assert _null_markers(AlwaysDirtyModel, obj.pk).count() == 0, (
+            "After flush() the always-dirty model must be CLEAN — flush's own "
+            "recompute save() must not re-insert a NULL marker."
+        )
+        ct = ContentType.objects.get_for_model(AlwaysDirtyModel)
+        assert (
+            DirtyInstance.objects.filter(content_type=ct, object_id=obj.pk).count()
+            == 0
+        ), "flush() must leave no DirtyInstance markers (the safety valve was not hit)."
+
+    def test_user_save_after_flush_remarks(self, transactional_db, denorm_triggers):
+        """The flush-in-progress guard only suppresses flush-internal saves.
+        A subsequent USER save() must mark the object dirty again."""
+        from denorm import denorms
+        from test_app.models import AlwaysDirtyModel
+
+        obj = AlwaysDirtyModel.objects.create(first_name="Heidi")
+        denorms.flush()
+        # Converged clean (verified above); confirm baseline here too.
+        assert _null_markers(AlwaysDirtyModel, obj.pk).count() == 0
+
+        # A normal user save (outside flush) must re-mark dirty.
+        obj.note = "touched by user"
+        obj.save()
         assert _null_markers(AlwaysDirtyModel, obj.pk).count() == 1, (
-            "After flush() the decorator re-inserts a NULL marker because flush's "
-            "internal save() fires post_save → mark_dirty() — this is expected."
+            "A user save() after a flush must re-insert a NULL marker — the "
+            "guard suppresses only flush-internal saves, not user saves."
         )
 
 

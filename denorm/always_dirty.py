@@ -4,6 +4,12 @@ from django.db.models.signals import post_save
 def _mark_instance_dirty(sender, instance, **kwargs):
     from denorm import denorms
 
+    # flush() recomputes by calling obj.save(), which fires post_save again.
+    # Re-marking here would mean flush could never converge for an always-dirty
+    # model, so suppress the mark while a flush is recomputing this thread's
+    # object. User-initiated saves (outside flush) still mark normally.
+    if denorms.flush_in_progress():
+        return
     denorms.mark_dirty(instance)
 
 
@@ -15,7 +21,13 @@ def denorm_always_dirty(model):
     Use this when a denormalized field's value depends on inputs that the
     trigger / ``@depend_on_related`` / ``@depend_on_fields`` system cannot
     express — external state, time-based values, complex cross-table reads, etc.
-    The decorator guarantees a recompute on every ``save()``.
+    The decorator guarantees a recompute on every user ``save()``.
+
+    :func:`~denorm.flush` converges normally: it claims the NULL marker,
+    recomputes the fields, and clears the marker.  flush's own recompute
+    ``save()`` does NOT re-mark the object (a thread-local flush-in-progress
+    guard suppresses the handler during flush), so the object ends up clean —
+    no perpetual re-marking.  A subsequent user ``save()`` marks it dirty again.
 
     .. note::
 

@@ -208,14 +208,13 @@ Same-model dependencies: ``depend_on_fields``
 
    .. note::
 
-      Because ``flush()`` internally calls ``save()`` to write the recomputed
-      values, the decorator re-inserts a NULL marker after each flush pass.
-      This means models decorated with ``@denorm_always_dirty`` are
-      *perpetually* in the dirty queue (one marker per object, re-inserted
-      every flush).  The field value is always correct after each ``flush()``
-      call — the residual marker just schedules another recompute on the next
-      call.  This is intentional: the decorator is meant for fields that must
-      be recomputed unconditionally.
+      ``flush()`` converges normally for decorated models.  It claims and
+      deletes the NULL marker, recomputes the fields, and leaves the object
+      **clean**.  Although ``flush()`` writes the recomputed values via
+      ``save()`` (which would normally re-fire the ``post_save`` handler), a
+      thread-local flush-in-progress guard suppresses the handler during
+      flush, so flush's own recompute save does **not** re-mark the object.
+      A subsequent *user* ``save()`` marks the object dirty again, as expected.
 
 
 Settings

@@ -30,14 +30,17 @@ Changelog
 * feature: ``denorm.mark_dirty(*instances)`` — explicitly marks whole
   objects dirty (NULL markers).
 * feature: ``@denorm.denorm_always_dirty`` model class decorator — every
-  ``save()`` of the decorated model unconditionally inserts a
+  user ``save()`` of the decorated model unconditionally inserts a
   ``func_name=NULL`` dirty marker, guaranteeing that all its denormalized
-  fields are recomputed by the next ``flush()``.  Intended for denorms whose
-  value depends on inputs the trigger / ``@depend_on_related`` /
-  ``@depend_on_fields`` system cannot express (external state, time-based
-  values, complex cross-table reads).  ``QuerySet.update()`` / ``bulk_create()``
-  / raw SQL bypass ``post_save`` and therefore bypass this decorator — use
-  ``mark_dirty()`` explicitly for those paths.
+  fields are recomputed by the next ``flush()``.  ``flush()`` converges
+  normally: it recomputes and clears the marker, and its own recompute save
+  does not re-mark the object (a thread-local flush-in-progress guard).
+  Intended for denorms whose value depends on inputs the trigger /
+  ``@depend_on_related`` / ``@depend_on_fields`` system cannot express
+  (external state, time-based values, complex cross-table reads).
+  ``QuerySet.update()`` / ``bulk_create()`` / raw SQL bypass ``post_save`` and
+  therefore bypass this decorator — use ``mark_dirty()`` explicitly for those
+  paths.
 * feature: ``DENORM_MAX_FLUSH_PASSES`` setting (default ``100``):
   ``flush()`` aborts with an error log naming the still-dirty models
   instead of looping forever when a denormalized function is
