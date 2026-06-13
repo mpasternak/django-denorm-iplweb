@@ -13,6 +13,17 @@ Changelog
   ``LISTEN/NOTIFY`` to finish draining a cascade. Bounded by the new
   ``DENORM_MAX_QUEUE_PASSES`` setting (default ``100``), the queue
   analogue of ``DENORM_MAX_FLUSH_PASSES``.
+* fix: ``flush_batch`` now **isolates per-pair failures**. If
+  ``flush_single`` raises for one ``(content_type_id, object_id)`` pair
+  (retry-exhausted serialization failure, or any non-transient error),
+  the exception is logged at ``ERROR`` level with full traceback and the
+  ``(ct, oid)`` pair, and iteration continues with the next pair.
+  The task returns normally so the chord callback (``_flush_requeue``) is
+  guaranteed to run — preventing a single bad object from stalling the
+  entire convergence round. The failing object's ``DirtyInstance`` marker
+  persists (``flush_single``'s transaction rolled back, so the marker was
+  never deleted) and is retried automatically on the next round, bounded
+  by ``DENORM_MAX_QUEUE_PASSES``.
 * perf: marker INSERTs performed *during a flush* no longer emit a NOTIFY
   wake-up. ``flush_single`` sets a transaction-local GUC
   (``SET LOCAL denorm.flushing = 'on'``) and migration ``0019`` guards

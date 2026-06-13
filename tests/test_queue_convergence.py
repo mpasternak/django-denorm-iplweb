@@ -8,6 +8,9 @@ A. ``flush_via_queue`` self-converges across a CROSS-OBJECT cascade using a
 B. flush-internal marker INSERTs no longer NOTIFY the queue channel (a session
    GUC ``denorm.flushing`` set with SET LOCAL guards the trigger), while genuine
    ORM writes still NOTIFY.
+C. ``flush_batch`` isolates per-pair failures: one bad object cannot stall the
+   whole round (the chord callback still fires) and its marker persists for the
+   next convergence round.
 
 Run with:
     uv run pytest tests/test_queue_convergence.py -v
@@ -15,6 +18,7 @@ Run with:
 
 from __future__ import annotations
 
+import logging
 import select
 import time
 
@@ -339,3 +343,110 @@ def test_migration_0019_forward_and_reverse():
     executor = MigrationExecutor(conn)
     executor.migrate([("denorm", "0019_conditional_notify_during_flush")])
     assert "denorm.flushing" in func_src()
+
+
+# ---------------------------------------------------------------------------
+# 6. flush_batch isolates per-pair failures (audit #2 hardening).
+# ---------------------------------------------------------------------------
+
+
+def test_flush_batch_per_pair_isolation(transactional_db, denorm_triggers, caplog):
+    """One bad object in a batch must not prevent the other pairs in the same
+    flush_batch call from being processed, must not raise (so the chord
+    callback fires), must log the error with the failing (ct, oid) pair, and
+    must leave the failing object's DirtyInstance marker in place (it was
+    never claimed/deleted because flush_single's transaction rolled back, so
+    the next convergence round will retry it).
+
+    RED scenario (pre-fix): flush_batch propagates the exception from the bad
+    pair, so the two good pairs after/before it are NOT processed and the
+    task itself raises — preventing the chord callback from running.
+
+    GREEN (post-fix): the exception is caught, logged at ERROR/EXCEPTION
+    level, iteration continues, and the task returns normally.
+    """
+    from unittest.mock import patch
+
+    from test_app.models import Forum
+
+    from denorm import denorms, tasks
+    from denorm.models import DirtyInstance
+
+    # Create three Forum objects so we have three distinct (ct, oid) pairs.
+    f_good1 = Forum.objects.create(title="good1")
+    f_bad = Forum.objects.create(title="bad")
+    f_good2 = Forum.objects.create(title="good2")
+
+    forum_ct = ContentType.objects.get_for_model(Forum)
+    ct_id = forum_ct.pk
+
+    # Flush/settle denorm state, then start from a clean dirty table.
+    denorms.flush()
+    DirtyInstance.objects.all().delete()
+
+    # Insert a DirtyInstance marker for the bad object only; the good
+    # objects do NOT have markers (flush_single for them is a no-op / they
+    # get claimed cleanly).  We only care that the bad object's marker is NOT
+    # removed (it was never claimed) and the other pairs don't raise.
+    # For isolation clarity, give all three a marker.
+    DirtyInstance.objects.create(content_type=forum_ct, object_id=f_good1.pk)
+    DirtyInstance.objects.create(content_type=forum_ct, object_id=f_bad.pk)
+    DirtyInstance.objects.create(content_type=forum_ct, object_id=f_good2.pk)
+
+    pairs = [(ct_id, f_good1.pk), (ct_id, f_bad.pk), (ct_id, f_good2.pk)]
+
+    boom = RuntimeError("synthetic non-transient failure for bad object")
+
+    # Save a reference to the real flush_single BEFORE patching so we can call
+    # it for the good objects without recursing into the mock.
+    _real_flush_single = denorms.flush_single
+
+    def selective_flush_single(content_type_id, object_id, **kw):
+        if object_id == f_bad.pk:
+            raise boom
+        # Call the pre-patch flush_single for good objects.
+        return _real_flush_single(content_type_id, object_id, **kw)
+
+    with (
+        patch("denorm.denorms.flush_single", side_effect=selective_flush_single),
+        caplog.at_level(logging.ERROR, logger="denorm.tasks"),
+    ):
+        # .run() bypasses Celery serialization/Singleton and executes the
+        # task body directly — ideal for unit-testing the body logic.
+        # If the task raises, this line is never reached and the test fails.
+        tasks.flush_batch.run(pairs=pairs)
+
+    # 1. Task must NOT raise — the chord callback depends on this.
+    # (If flush_batch raised, this line would not be reached.)
+
+    # 2. The good objects' markers must have been deleted (flush_single ran).
+    assert not DirtyInstance.objects.filter(
+        content_type=forum_ct, object_id=f_good1.pk
+    ).exists(), "good1's DirtyInstance marker was not cleaned up"
+    assert not DirtyInstance.objects.filter(
+        content_type=forum_ct, object_id=f_good2.pk
+    ).exists(), "good2's DirtyInstance marker was not cleaned up"
+
+    # 3. The bad object's marker MUST still exist: flush_single's transaction
+    #    rolled back (it raised), so the marker was never deleted.
+    assert DirtyInstance.objects.filter(
+        content_type=forum_ct, object_id=f_bad.pk
+    ).exists(), (
+        "bad object's DirtyInstance marker was removed even though flush_single "
+        "raised — the marker must persist for retry on the next round"
+    )
+
+    # 4. The error must have been logged with the failing pair visible.
+    error_records = [
+        r for r in caplog.records if r.levelno >= logging.ERROR
+    ]
+    assert error_records, (
+        "flush_batch did not log any ERROR/EXCEPTION for the failing pair; "
+        "silent swallow is forbidden — the error must be logged with context"
+    )
+    # At least one record should mention the content_type_id and object_id.
+    combined = " ".join(r.getMessage() for r in error_records)
+    assert str(ct_id) in combined or str(f_bad.pk) in combined, (
+        f"logged error does not mention the failing pair "
+        f"(ct={ct_id}, oid={f_bad.pk}): {combined!r}"
+    )

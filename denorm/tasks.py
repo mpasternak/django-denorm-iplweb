@@ -33,9 +33,35 @@ def flush_batch(pairs):
     # One task per chunk of logical (content_type_id, object_id) pairs:
     # a 500k-row backlog must not become 500k broker messages. Overlap
     # with other workers degrades to skip_locked no-ops in flush_single.
+    #
+    # Per-pair isolation: a single bad object MUST NOT stall the whole round.
+    # flush_single is wrapped in @retry_on_serialization_failure, so what
+    # reaches here is either retry-exhausted or a non-transient error.
+    # We log loudly (logger.exception preserves the full traceback and
+    # exc_info) and CONTINUE to the next pair.  Do NOT re-raise: re-raising
+    # fails the task, which prevents the chord callback (_flush_requeue) from
+    # running, which is precisely the stall we are preventing.
+    #
+    # The failing object's DirtyInstance marker is NOT deleted — flush_single's
+    # transaction rolled back, so the marker persists and will be retried on
+    # the next convergence round.  If the object keeps failing,
+    # DENORM_MAX_QUEUE_PASSES caps the number of re-dispatches and logs an
+    # error, bounding recovery latency without blocking other objects.
+    errors = 0
     for content_type_id, object_id in pairs:
-        denorms.flush_single(content_type_id, object_id)
-    return True
+        try:
+            denorms.flush_single(content_type_id, object_id)
+        except Exception:
+            errors += 1
+            logger.exception(
+                "denorm flush_batch: unhandled error flushing "
+                "(content_type_id=%s, object_id=%s); skipping pair so the "
+                "rest of the batch and the chord callback can still run. "
+                "The object's DirtyInstance marker persists for the next round.",
+                content_type_id,
+                object_id,
+            )
+    return {"processed": len(pairs), "errors": errors}
 
 
 def _chunk_distinct_pairs():
