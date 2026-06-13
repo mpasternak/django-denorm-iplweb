@@ -10,6 +10,12 @@ Changelog
   claim time. Previously, the unique-index dedup could silently swallow
   concurrent invalidation markers inserted between the claim and the
   delete, permanently losing them until the next full rebuild.
+* fix: merged triggers now union their watched-column lists. When two
+  triggers collided on a name, ``TriggerSet.append`` merged only the
+  newcomer's actions and kept the existing trigger's watch-list, silently
+  dropping any column watched solely by the newcomer; a change to that
+  column would not fire the trigger, causing latent missed invalidation
+  (stale data). The watch-lists are now unioned (harmless over-fire).
 * feature: ``@depend_on_fields(*names)`` — declarative same-model
   dependencies for ``@denormalized`` functions. A declared function gets
   a targeted per-function database trigger that fires only when a
