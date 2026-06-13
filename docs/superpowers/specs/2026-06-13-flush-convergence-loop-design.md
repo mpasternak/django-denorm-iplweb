@@ -43,23 +43,35 @@ process them immediately instead of returning:
 def flush_single(content_type_id, object_id, content_type=None):
     ...
     with transaction.atomic():
-        obj = lock_object_or_bail()                 # unchanged (1.5 order)
-        scope = _claim_and_delete_markers(ct, oid)  # unchanged
+        obj = lock_object_or_bail()              # existing lock + bail paths
+        scope = _claim_and_delete_markers(ct, oid)   # see return-shape note
         if not scope:
             return
 
         for _ in range(settings.DENORM_MAX_CONVERGE_PASSES):   # e.g. 5
             obj.save(**_build_save_kwargs(scope))
-            scope = _claim_and_delete_markers(ct, oid)   # NEW markers from
-            if not scope:                                # our own save are
-                break                                    # visible in-tx
-        # no trailing work; markers beyond the cap (if any) are left for
-        # the outer loop / the DENORM_MAX_FLUSH_PASSES valve
+            scope = _claim_and_delete_markers(ct, oid)   # markers our own save
+            if not scope:                                # inserted are visible
+                break                                    # in-tx (MVCC)
+        # markers beyond the cap (if any) stay for the outer loop /
+        # the DENORM_MAX_FLUSH_PASSES valve
 ```
 
-`_build_save_kwargs(scope)` is the existing `update_fields` logic factored
-out of `flush_single` (NULL in `scope` → full save; otherwise
-`update_fields=[validated func names]`, minus auto_now exclusions).
+Illustrative names: only `_claim_and_delete_markers` exists today.
+`lock_object_or_bail()` denotes the existing object-lock plus the
+`DoesNotExist` / locked-elsewhere bail logic; `_build_save_kwargs()` is the
+existing `update_fields` logic factored out of `flush_single` (NULL in
+`scope` → full save; otherwise `update_fields=[validated func names]`, minus
+auto_now exclusions).
+
+**Return-shape refactor (consistency fix found in self-review).** Today
+`_claim_and_delete_markers` returns a `(claimed_any, func_names)` tuple, so
+the `scope = ...; if not scope` form above would be wrong (a tuple is always
+truthy). Change the helper to return **just the `func_names` set** (empty set
+when nothing is claimable); `if not scope` then replaces the `claimed_any`
+flag, and `scope` everywhere is that set (NULL membership → full save). The
+deleted-object bail path already ignores the return value, so it is
+unaffected.
 
 ### Per-function markers (this is what changed since the original §2.5)
 
@@ -100,6 +112,11 @@ the cap, remaining markers stay in the table and are handled by the outer
 loop, ultimately bounded by `DENORM_MAX_FLUSH_PASSES`. Degraded behavior
 equals today's behavior.
 
+A *legitimate* same-model chain deeper than the cap is also handled
+correctly — the overflow links simply fall back to outer-loop passes (no
+infinite loop, just less optimization). Set the default comfortably above
+realistic chain depth.
+
 ### Concurrency safety (identical argument to spec 1.5)
 
 * Markers from concurrent **uncommitted** transactions are invisible — left
@@ -112,6 +129,30 @@ equals today's behavior.
   uncommitted delete and lands after our commit (spec 1.5) — never lost.
 * All claims use `select_for_update(skip_locked=True)`; we never block on
   another flush worker.
+* A serialization failure (40001 / 40P01) mid-loop rolls back the whole
+  transaction; `retry_on_serialization_failure` re-runs `flush_single` from
+  scratch (re-lock, re-claim, re-loop). It is idempotent — no partial state
+  survives a rolled-back attempt.
+
+**Reusing the in-memory `obj` across iterations is safe — and this needs
+spelling out (self-review gap).** We hold `select_for_update(of=('self',))`
+on the object row for the whole transaction, so no concurrent transaction can
+change *this object's own source columns* under us. A chain marker for one of
+its own denorm fields therefore cannot arise from a concurrent write during
+the loop — and the own-column exclusion means our own saves don't produce one
+either. The markers the loop re-claims are thus one of:
+
+* **(a) downstream same-object chain links** (`full_name` save →
+  `letterhead` marker) — these recompute correctly from the in-memory denorm
+  fields that prior iterations' `pre_save` already refreshed on `obj`; or
+* **(b) dependency-driven markers** whose denorm function reads *related*
+  objects — `pre_save` recomputes these with a fresh query, not from `obj`'s
+  in-memory state.
+
+Neither case reads stale in-memory *source* data, so the loop does not need a
+`refresh_from_db()` between iterations. (Without this argument the reuse would
+look unsafe; it is the object-row lock + own-column exclusion that make it
+sound.)
 
 The loop holds the object row lock marginally longer (one extra UPDATE per
 chain link). That is the deliberate trade: fewer transactions/locks/scans
