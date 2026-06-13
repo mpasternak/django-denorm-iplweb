@@ -429,6 +429,41 @@ class TestTriggerSetShape:
                 "plpgsql"
             )
 
+    def test_generic_relation_when_parenthesises_content_type_or(self, db):
+        """The content-type element ``(OLD.ct = X) OR (NEW.ct = X)`` must be
+        wrapped in its own parens before being AND-joined with the
+        field-change conditions.
+
+        ``AND`` binds tighter than ``OR`` in SQL, so the unwrapped form
+
+            ((fields changed)) AND (OLD.ct = X) OR (NEW.ct = X)
+
+        parses as ``((fields changed) AND OLD-ct-match) OR NEW-ct-match`` —
+        the trigger fires whenever ``NEW.content_type`` matches even if no
+        watched field changed (over-fire). Safe — flush is idempotent — but
+        wasteful, and only correct by accident. Wrapping restores the intended
+        ``(fields changed) AND (content type relevant, old or new)``.
+        """
+        from denorm.denorms import build_triggerset
+
+        ts = build_triggerset()
+        generic_updates = [
+            t
+            for t in ts.triggers.values()
+            if t.event == "update" and t.content_type_field
+        ]
+        assert generic_updates, "expected a generic-relation UPDATE trigger"
+        for trigger in generic_updates:
+            sql, _ = trigger.sql()
+            ctf = trigger.content_type_field
+            ct = trigger.content_type
+            wrapped = '((OLD."%s" = %s) OR (NEW."%s" = %s))' % (ctf, ct, ctf, ct)
+            assert wrapped in sql, (
+                f"content-type OR group not parenthesised in {trigger.name()}; "
+                "AND/OR precedence makes the trigger over-fire on a matching "
+                "NEW.content_type even when no watched field changed"
+            )
+
 
 class TestMarkDirtyAndNullContract:
     def test_mark_dirty_emits_null_marker_and_flush_full_saves(

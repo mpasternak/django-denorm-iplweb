@@ -110,8 +110,14 @@ class Trigger(base.Trigger):
         if ct_field:
             ct_field = qn(ct_field)
             if event == "UPDATE":
+                # Outer parens are load-bearing: this element is AND-joined
+                # with the field-change conditions, and AND binds tighter
+                # than OR. Without them the WHEN would parse as
+                # "(fields changed AND OLD-ct-match) OR NEW-ct-match",
+                # firing on any matching NEW.content_type even when no
+                # watched field changed (harmless over-fire, but wasteful).
                 conditions.append(
-                    "(OLD.%(ctf)s = %(ct)s) OR (NEW.%(ctf)s = %(ct)s)"
+                    "((OLD.%(ctf)s = %(ct)s) OR (NEW.%(ctf)s = %(ct)s))"
                     % {"ctf": ct_field, "ct": content_type}
                 )
             elif event == "INSERT":
