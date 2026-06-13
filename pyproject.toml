@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "BSD-3-Clause"
 authors = [{name = "Michal Pasternak", email = "michal.dtz@gmail.com"}]
 dependencies = [
-    "Django>=4.2",
+    "Django>=5.2",
     "celery",
     "celery-singleton",
     "tqdm",
@@ -19,7 +19,6 @@ dependencies = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: Django",
-    "Framework :: Django :: 4.2",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",
     "Intended Audience :: Developers",

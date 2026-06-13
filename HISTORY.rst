@@ -4,6 +4,8 @@ Changelog
 1.12.0 (unreleased)
 -------------------
 
+* **Dropped Django 4.2 support** (extended support ended April 2026).
+  Minimum is now Django 5.2 LTS. CI tests Django 5.2 and 6.0.
 * fix: ``flush_single`` now deletes claimed ``DirtyInstance`` markers at
   claim time. Previously, the unique-index dedup could silently swallow
   concurrent invalidation markers inserted between the claim and the

@@ -415,11 +415,18 @@ class TestDenormalisation(TransactionTestCase):
         models.Post.objects.create(forum_id=f1.id)
         self.assertEqual(models.Forum.objects.get(id=f1.id).post_count, 2)
         f1.title = "new"
-        self.assertEqual(f1.post_count, 1)
+        self.assertEqual(f1.post_count, 1)  # in-memory value is stale here
         f1.save()
-        self.assertEqual(f1.post_count, 2)
+        # Contract (spec 1.4): the trigger-maintained counter is written as
+        # ``post_count = post_count`` (an F() expression), so save() can never
+        # clobber the DB value with the stale in-memory 1 — the DB stays 2.
+        # save() does NOT refresh the attribute onto the instance (Django <6.0
+        # leaves it stale, 6.0 happens to reload it), so callers must
+        # refresh_from_db(). The DB is authoritative.
         self.assertEqual(models.Forum.objects.get(id=f1.id).post_count, 2)
         self.assertEqual(models.Forum.objects.get(id=f1.id).title, "new")
+        f1.refresh_from_db()
+        self.assertEqual(f1.post_count, 2)
 
     def test_foreignkey(self):
         f1 = models.Forum.objects.create(title="forumone")
