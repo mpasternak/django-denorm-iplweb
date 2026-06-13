@@ -26,6 +26,16 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13']
@@ -42,3 +52,7 @@ jobs:
         python -m pip install tox tox-gh-actions
     - name: Test with tox
       run: tox
+      env:
+        # Django suite (runtests.py) + pytest read the Celery broker from here;
+        # the redis service above backs flush_via_queue / flush_batch dedup.
+        DENORM_TEST_REDIS_URL: redis://localhost:6379/0

@@ -74,13 +74,28 @@ def thread_runner():
 def celery_redis():
     """Real Redis for the celery queue path (broker + result + singleton
     lock backend). Eager mode runs tasks inline; the broker is still needed
-    because celery-singleton acquires a Redis lock on every apply_async."""
+    because celery-singleton acquires a Redis lock on every apply_async.
+
+    Uses an externally-provided ``DENORM_TEST_REDIS_URL`` (e.g. a CI service
+    container) when set; otherwise spins a Redis testcontainer for local dev."""
+    import contextlib
     import os
 
-    from testcontainers.redis import RedisContainer
+    @contextlib.contextmanager
+    def _redis_url():
+        existing = os.environ.get("DENORM_TEST_REDIS_URL")
+        if existing:
+            yield existing
+            return
+        from testcontainers.redis import RedisContainer
 
-    with RedisContainer("redis:7-alpine") as rc:
-        url = f"redis://{rc.get_container_host_ip()}:{rc.get_exposed_port(6379)}/0"
+        with RedisContainer("redis:7-alpine") as rc:
+            yield (
+                f"redis://{rc.get_container_host_ip()}:"
+                f"{rc.get_exposed_port(6379)}/0"
+            )
+
+    with _redis_url() as url:
         os.environ["DENORM_TEST_REDIS_URL"] = url
 
         # The celery app is configured via config_from_object("django.conf:
@@ -96,7 +111,7 @@ def celery_redis():
 
         # Also poke the live app.conf and drop any cached singleton backend on
         # our tasks, covering the case where they were resolved earlier.
-        from test_denorm_project.celery import app
+        from test_denorm_project.celery_app import app
 
         app.conf.broker_url = url
         app.conf.result_backend = url
@@ -121,7 +136,7 @@ def live_worker(celery_redis):
     from celery.contrib.testing.worker import start_worker
     from django.conf import settings as dj_settings
 
-    from test_denorm_project.celery import app
+    from test_denorm_project.celery_app import app
 
     # CELERY_TASK_ALWAYS_EAGER is sourced lazily from Django settings via
     # config_from_object — the same shadowing that hid broker_url. Flipping

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 
-from test_denorm_project.celery import app
+from test_denorm_project.celery_app import app
 
 
 # Registered at MODULE IMPORT time, before live_worker starts its worker.
