@@ -77,6 +77,53 @@ def test_same_model_chain_settles_eagerly(transactional_db, denorm_triggers):
 
 
 @override_settings(DENORM_ALWAYS_EAGER=True)
+def test_m2m_change_settles_eagerly(transactional_db, denorm_triggers):
+    """An m2m relation edit settles the m2m-dependent denorm field without a
+    manual flush, proving the m2m_changed signal wiring in eager.connect().
+
+    Model choice: Member.bookmark_titles depends on Member.bookmarks (a
+    plain ManyToManyField to Post) via @depend_on_related("Post",
+    foreign_key="bookmarks").  Its return value is a plain TextField
+    ("\n".join of Post.title values), giving a clean string assertion.
+    Forum.authors was not chosen because it is itself a
+    @denormalized(ManyToManyField) whose m2m output requires an extra
+    reverse-lookup to assert, adding noise.
+    """
+    from test_app.models import Forum, Member, Post
+
+    from denorm.models import DirtyInstance
+
+    forum = Forum.objects.create(title="F")
+    member = Member.objects.create(first_name="Alice", name="Smith")
+    post1 = Post.objects.create(forum=forum, title="Hello World")
+    post2 = Post.objects.create(forum=forum, title="Second Post")
+
+    # Add first bookmark via m2m — eager should flush immediately.
+    member.bookmarks.add(post1)
+    member.refresh_from_db()
+    assert member.bookmark_titles == "Hello World", (
+        "eager did not settle bookmark_titles after m2m add"
+    )
+
+    # Add a second bookmark.
+    member.bookmarks.add(post2)
+    member.refresh_from_db()
+    titles = set(member.bookmark_titles.splitlines())
+    assert titles == {"Hello World", "Second Post"}, (
+        f"eager did not settle after second m2m add; got {member.bookmark_titles!r}"
+    )
+
+    # Remove one bookmark — eager should flush again.
+    member.bookmarks.remove(post1)
+    member.refresh_from_db()
+    assert member.bookmark_titles == "Second Post", (
+        "eager did not settle bookmark_titles after m2m remove"
+    )
+
+    assert not DirtyInstance.objects.exists(), "DirtyInstance table not empty after eager flush"
+
+
+@override_settings(DENORM_ALWAYS_EAGER=True)
 def test_no_unbounded_recursion(transactional_db, denorm_triggers):
     """flush() saves objects which re-fire post_save; the thread-local guard
     must make those re-entrant calls no-ops (one flush per triggering save,

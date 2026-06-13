@@ -40,6 +40,13 @@ def _eager_flush(sender, **kwargs):
         return
     _state.flushing = True
     try:
+        # Lazy import: `from denorm import denorms` is safe at call time
+        # (the app registry is fully initialised before any signal fires),
+        # but a module-level import would create a circular dependency at
+        # app-load time (eager.py is imported by apps.py before the denorm
+        # package's __init__ finishes registering all symbols). Keeping the
+        # import here avoids that risk with negligible per-call overhead —
+        # Python caches it in sys.modules after the first resolution.
         from denorm import denorms
 
         denorms.flush()

@@ -169,8 +169,60 @@ Callbacks are lazy
 ------------------
 
 Your fields won't get updated immediately after making changes to some data.
-Instead potentially affected rows are marked as dirty in a special table and the
-update will be done by the ``denorm.flush`` method.
+Instead, potentially-affected rows are marked as dirty in a special table and
+the update will be done later by ``denorm.flush``.
+
+How a write flows through the system
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+1. **Field.pre_save()**: Django's ``Model.save()`` machinery calls each
+   field's ``pre_save()`` method *before* the SQL UPDATE/INSERT. denorm's
+   ``DenormDBField`` overrides this method to recompute the saved object's
+   *own* denormalized fields inline, so ``instance.my_denorm`` is already
+   correct when ``save()`` returns. (This is a field-method override, not
+   the ``pre_save`` signal.)
+
+2. **DB triggers mark dependent rows dirty**: the PostgreSQL triggers installed
+   by ``denorm_init`` fire *during* the SQL statement (AFTER … FOR EACH ROW).
+   They insert per-function ``DirtyInstance`` markers —
+   ``(content_type, object_id, func_name)`` triples — for every row on *other*
+   models (or the same model, for same-model chains) that depends on the
+   changed columns. Markers use ``ON CONFLICT DO NOTHING``, so duplicates are
+   silently dropped.
+
+   Markers are **per-function**: each trigger targets the specific
+   ``@denormalized`` function(s) that declared a dependency on the changed
+   column (via ``@depend_on_fields`` or ``@depend_on_related``). A marker with
+   ``func_name=NULL`` means "recompute *every* denormalized field of this
+   object"; ``NULL`` markers are produced only by :func:`denorm.mark_dirty`
+   and ``rebuildall`` / ``rebuild_instances_of``, never by the library's own
+   triggers. ``NULL`` takes precedence over field-level markers during flush.
+
+3. **denorm.flush() recomputes dirty rows**: ``flush()`` iterates the
+   ``DirtyInstance`` table in passes. For each ``(content_type, object_id)``
+   pair it calls ``flush_single``, which:
+
+   * locks the object row (``SELECT … FOR UPDATE SKIP LOCKED``),
+   * claims and **deletes** the markers at claim time (freeing the unique-index
+     key so any marker inserted while we compute is not silently dropped),
+   * calls ``obj.save(update_fields=[…])`` for targeted flushes (only the
+     declared function columns are written; ``auto_now`` columns are not
+     touched), or a full ``save()`` for ``NULL``-marker flushes,
+   * runs a convergence loop (capped by ``DENORM_MAX_CONVERGE_PASSES``,
+     default 5) that re-claims markers inserted by *this* save's triggers for
+     the *same* object — same-model chains (e.g. ``full_name`` → ``letterhead``)
+     are thereby settled in one ``flush_single`` call rather than needing
+     multiple outer passes.
+
+   ``flush()`` itself loops until no dirty rows remain, capped by
+   ``DENORM_MAX_FLUSH_PASSES`` (default 100).
+
+**Bulk-write note**: ``QuerySet.update()`` / ``bulk_create()`` /
+``bulk_update()`` fire no per-row Django signals, so the eager handler (see
+:ref:`testing`) does not auto-flush them. The DB triggers still mark the
+affected rows dirty; call ``denorm.flush()`` explicitly after bulk paths.
+Similarly, :func:`denorm.mark_dirty` uses ``bulk_create`` (no signal); pair it
+with a save or an explicit flush.
 
 Post-request flushing
 ^^^^^^^^^^^^^^^^^^^^^
@@ -222,11 +274,13 @@ This should be redone after every time you make changes to denormalized fields. 
 unless you set ``DENORM_INSTALL_TRIGGERS_AFTER_MIGRATE`` variable to ``False``, trigger installation
 will be performed every single time after ``migrate`` command is finished.
 
+.. _testing:
+
 Testing denormalized apps
 =========================
 
-When testing a denormalized app you will need to instal the triggers in the setUp method. You could
-also use a tearDown procedure like::
+When testing a denormalized app you will need to install the triggers in the
+``setUp`` method. You could also use a ``tearDown`` procedure like::
 
     from denorm import denorms
 
@@ -237,6 +291,49 @@ also use a tearDown procedure like::
 
         def tearDown(self):
             denorms.drop_triggers()
+
+After each write that should affect *dependent* objects, call
+``denorm.flush()`` to recompute the dirty rows before asserting on them::
+
+    forum.title = "Renamed"
+    forum.save()
+    denorm.flush()
+    post.refresh_from_db()
+    assert post.forum_title == "Renamed"
+
+Using DENORM_ALWAYS_EAGER in tests
+-----------------------------------
+
+Setting ``DENORM_ALWAYS_EAGER = True`` (via ``@override_settings`` or your
+test settings module) makes denorm flush synchronously after every
+``post_save`` / ``post_delete`` / ``m2m_changed`` signal, so denorm fields on
+dependent objects and same-model chains settle immediately — no manual
+``denorm.flush()`` needed. This mirrors Celery's ``CELERY_TASK_ALWAYS_EAGER``
+pattern::
+
+    from django.test import TestCase, override_settings
+    from denorm import denorms
+
+    @override_settings(DENORM_ALWAYS_EAGER=True)
+    class TestForum(TestCase):
+
+        def setUp(self):
+            denorms.install_triggers()
+
+        def test_author_names_updates_on_post_save(self):
+            forum = Forum.objects.create(title="Tech")
+            member = Member.objects.create(name="Alice")
+            Post.objects.create(forum=forum, author=member)
+            # No denorm.flush() needed — eager flushed it already.
+            forum.refresh_from_db()
+            assert "Alice" in forum.author_names
+
+``DENORM_ALWAYS_EAGER`` is **test-only**: it reintroduces synchronous coupling
+and is not suitable for production. Bulk writes (``QuerySet.update()``,
+``bulk_create()``, ``bulk_update()``, :func:`denorm.mark_dirty`) fire no
+per-row signals, so eager does not auto-flush those — call
+``denorm.flush()`` explicitly after bulk paths. See ``DENORM_ALWAYS_EAGER`` in
+the Settings section of the :doc:`reference`.
 
 
 .. _supervisord: http://supervisord.org
