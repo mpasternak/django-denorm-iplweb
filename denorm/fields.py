@@ -4,6 +4,97 @@ from django.db import connection, models
 from . import denorms
 
 
+_SAFE_SELF_FUNCS_CACHE = {}
+
+
+def _is_plain_column(model, name):
+    """True iff ``name`` (a field name or attname) resolves to a concrete
+    column of ``model`` that is NOT itself a denormalized field.
+
+    A denormalized field carries a ``denorm`` attribute on its field
+    instance (set in ``contribute_to_class``); a plain column does not.
+    Unresolvable names are treated as NOT plain (conservative: keep marker).
+    """
+    by_either_name = {}
+    for f in model._meta.concrete_fields:
+        by_either_name[f.name] = f
+        by_either_name[f.attname] = f
+    field = by_either_name.get(name)
+    if field is None:
+        return False
+    return getattr(field, "denorm", None) is None
+
+
+def _safe_self_funcs(model):
+    """Set of denorm field names on ``model`` whose value is a pure function
+    of this row's own PLAIN (non-denormalized) columns — and therefore whose
+    self-marker is provably redundant after an ORM save that recomputed them.
+
+    A denorm field qualifies iff ALL hold:
+      * it is a real denorm field with a callback (``denorm.func``);
+      * its dependency list is non-empty AND every dependency is a
+        ``DependOnFields`` (no ``@depend_on_related`` / CacheKey / aggregate);
+      * every declared dependency name resolves to a plain, non-denorm
+        concrete column of the same model.
+
+    Undeclared funcs (empty depend list), chain funcs (a declared name that
+    is itself a denorm field), related/aggregate/CacheKey funcs all fail one
+    of these and are EXCLUDED — their markers are never dropped here.
+
+    Result is cached per model.
+    """
+    cached = _SAFE_SELF_FUNCS_CACHE.get(model)
+    if cached is not None:
+        return cached
+
+    from denorm.dependencies import DependOnFields
+
+    safe = set()
+    for f in model._meta.fields:
+        denorm = getattr(f, "denorm", None)
+        if denorm is None or not getattr(denorm, "func", None):
+            continue
+        deps = getattr(denorm, "depend", []) or []
+        depfields = [d for d in deps if isinstance(d, DependOnFields)]
+        # Must have at least one DependOnFields and NO other dependency kind.
+        if not depfields or len(depfields) != len(deps):
+            continue
+        names = {n for d in depfields for n in d.field_names}
+        if names and all(_is_plain_column(model, n) for n in names):
+            safe.add(denorm.fieldname)
+
+    _SAFE_SELF_FUNCS_CACHE[model] = safe
+    return safe
+
+
+def _drop_redundant_self_markers(sender, instance, update_fields=None, **kwargs):
+    """post_save handler: delete this object's provably-redundant self-markers.
+
+    Runs inside the save's transaction, AFTER pre_save recomputed the denorm
+    columns and AFTER the self-trigger inserted markers. For each denorm func
+    that is a pure function of this row's own plain columns AND was recomputed
+    by this save (full save, or func in update_fields), the marker the trigger
+    just created is redundant -> delete it. Only for THIS (content_type, pk),
+    only func_name IN safe; NULL / chain / related / undeclared / non-recomputed
+    markers are never matched.
+    """
+    safe = _safe_self_funcs(sender)
+    if not safe:
+        return
+    if update_fields is not None:
+        safe = safe & set(update_fields)
+        if not safe:
+            return
+    from django.contrib.contenttypes.models import ContentType
+
+    from denorm.models import DirtyInstance
+
+    ct = ContentType.objects.get_for_model(sender)
+    DirtyInstance.objects.filter(
+        content_type=ct, object_id=instance.pk, func_name__in=safe
+    ).delete()
+
+
 def _clear_denorm_pre_save_cache(sender, instance, **kwargs):
     """Clear cached pre_save values after save completes.
 
@@ -73,6 +164,11 @@ def denormalized(DBField, *args, **kwargs):
                 _clear_denorm_pre_save_cache,
                 sender=cls,
                 dispatch_uid=f"denorm_clear_pre_save_cache_{cls.__name__}",
+            )
+            models.signals.post_save.connect(
+                _drop_redundant_self_markers,
+                sender=cls,
+                dispatch_uid=f"denorm_drop_self_markers_{cls.__name__}",
             )
             DBField.contribute_to_class(self, cls, name, *args, **kwargs)
 

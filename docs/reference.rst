@@ -35,6 +35,17 @@ Functions
 
 .. autofunction:: denorm.flush
 
+.. note::
+
+   ``flush()`` automatically skips the redundant re-save for
+   ``@denormalized`` fields whose value is a pure function of the row's own
+   plain (non-denormalized) columns.  A ``post_save`` handler drops those
+   dirty markers immediately after each ORM ``save()``, so ``flush()`` only
+   processes markers that are genuinely unresolved (chain denorms, related
+   denorms, bulk/raw writes).  This optimisation is always on, requires no
+   configuration, and never changes results — it only ever removes
+   provably-redundant markers.
+
 Middleware
 ==========
 
