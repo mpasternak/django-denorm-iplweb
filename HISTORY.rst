@@ -141,6 +141,16 @@ Changelog
   ``delete_similar``, ``delete_this_and_similar``); unused
   ``denorm_queue_name`` variable in ``db/triggers.py``; unused
   ``Denorm.update()`` (spec 3.3).
+* feature: ``DENORM_ALWAYS_EAGER`` setting (default ``False``) — test-only
+  synchronous flush after every ``post_save`` / ``post_delete`` /
+  ``m2m_changed`` signal. Mirrors Celery's ``task_always_eager``: denorm
+  fields on dependent objects and same-model chains settle immediately
+  without a manual ``denorm.flush()`` call or a Celery worker. Enable
+  per-test with ``@override_settings(DENORM_ALWAYS_EAGER=True)``. **Not
+  for production** — reintroduces synchronous coupling. Bulk paths
+  (``QuerySet.update()``, ``bulk_create()``, ``bulk_update()``,
+  ``mark_dirty()``) fire no per-row signals and are not auto-flushed; call
+  ``denorm.flush()`` explicitly after bulk writes.
 
 1.11.1
 ------
