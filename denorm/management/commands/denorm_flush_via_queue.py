@@ -1,6 +1,6 @@
 import time
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from tqdm import tqdm
 
 from denorm.models import DirtyInstance
@@ -9,46 +9,49 @@ from denorm.tasks import flush_via_queue
 
 class Command(BaseCommand):
     help = (
-        "Recalculates the value of every denormalized field that was marked dirty using "
-        "Celery queues."
+        "Recalculates the value of every denormalized field that was marked "
+        "dirty, using Celery queues. Requires a configured Celery result "
+        "backend (the command waits on the dispatched task group)."
     )
 
-    def handle(self, **kwargs):
-        # Get the total count before starting
-        total_count = DirtyInstance.objects.count()
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--timeout",
+            type=float,
+            default=300.0,
+            help="Seconds to wait for the dispatch task (default 300).",
+        )
 
-        if total_count == 0:
+    def handle(self, timeout=300.0, **kwargs):
+        total_rows = DirtyInstance.objects.count()
+        if total_rows == 0:
             self.stdout.write(self.style.SUCCESS("No dirty instances to flush."))
             return
 
-        self.stdout.write(f"Flushing {total_count} dirty instances...")
+        self.stdout.write(f"Flushing {total_rows} dirty instance rows...")
 
-        # Start the flush task
         result = flush_via_queue.apply_async()
-
-        # Wait for the main task to spawn all subtasks
-        time.sleep(0.5)
-
-        # Get the group result
-        group_result = result.get()
+        try:
+            group_result = result.get(timeout=timeout)
+        except Exception as exc:  # no result backend, timeout, broker down
+            raise CommandError(
+                f"Could not obtain dispatch result ({exc!r}). This command "
+                "requires a Celery result backend."
+            )
 
         if group_result is None:
             self.stdout.write(self.style.SUCCESS("No tasks to process."))
             return
 
-        # Create progress bar
-        with tqdm(total=total_count, desc="Flushing", unit="task") as pbar:
+        total_tasks = len(group_result)
+        with tqdm(total=total_tasks, desc="Flushing", unit="batch") as pbar:
             while not group_result.ready():
-                # Count completed tasks
-                completed = group_result.completed_count()
-                pbar.n = completed
+                pbar.n = group_result.completed_count()
                 pbar.refresh()
                 time.sleep(0.1)
-
-            # Final update
-            pbar.n = total_count
+            pbar.n = total_tasks
             pbar.refresh()
 
         self.stdout.write(
-            self.style.SUCCESS(f"Successfully flushed {total_count} dirty instances.")
+            self.style.SUCCESS(f"Successfully flushed {total_rows} dirty rows.")
         )

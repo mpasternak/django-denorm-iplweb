@@ -179,26 +179,20 @@ class AggregateField(models.PositiveIntegerField):
         super().contribute_to_class(cls, name, *args, **kwargs)
 
     def pre_save(self, model_instance, add):
-        """
-        Makes sure we never overwrite the count with an outdated value.
-        This is necessary because if the count was changed by
-        a trigger after this model instance was created, the value
-        we would write has not been updated.
+        """Never write an application-side snapshot to this
+        trigger-maintained column.
+
+        On INSERT there can be no related rows yet -> 0. On UPDATE return
+        `F(column)` so the SQL reads `col = col`: resolved inside the
+        UPDATE itself, a concurrent trigger increment between any read
+        and this write cannot be lost. The in-memory attribute is NOT
+        refreshed by save(); callers needing the current value must
+        refresh_from_db().
         """
         if add:
-            # if this is a new instance there can't be any related objects yet
-            value = 0
-        else:
-            # if we're updating, get the most recent value from the DB
-            value = self.denorm.model.objects.filter(
-                pk=model_instance.pk,
-            ).values_list(
-                self.attname,
-                flat=True,
-            )[0]
-
-        setattr(model_instance, self.attname, value)
-        return value
+            setattr(model_instance, self.attname, 0)
+            return 0
+        return models.F(self.attname)
 
     def deconstruct(self):
         name, path, args, kwargs = super().deconstruct()

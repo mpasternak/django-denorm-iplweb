@@ -415,11 +415,18 @@ class TestDenormalisation(TransactionTestCase):
         models.Post.objects.create(forum_id=f1.id)
         self.assertEqual(models.Forum.objects.get(id=f1.id).post_count, 2)
         f1.title = "new"
-        self.assertEqual(f1.post_count, 1)
+        self.assertEqual(f1.post_count, 1)  # in-memory value is stale here
         f1.save()
-        self.assertEqual(f1.post_count, 2)
+        # Contract (spec 1.4): the trigger-maintained counter is written as
+        # ``post_count = post_count`` (an F() expression), so save() can never
+        # clobber the DB value with the stale in-memory 1 — the DB stays 2.
+        # save() does NOT refresh the attribute onto the instance (Django <6.0
+        # leaves it stale, 6.0 happens to reload it), so callers must
+        # refresh_from_db(). The DB is authoritative.
         self.assertEqual(models.Forum.objects.get(id=f1.id).post_count, 2)
         self.assertEqual(models.Forum.objects.get(id=f1.id).title, "new")
+        f1.refresh_from_db()
+        self.assertEqual(f1.post_count, 2)
 
     def test_foreignkey(self):
         f1 = models.Forum.objects.create(title="forumone")
@@ -774,10 +781,33 @@ class CommandsTestCase(TransactionTestCase):
     @patch("select.select")
     @patch("denorm.tasks.flush_via_queue")
     def test_denorm_queue(self, flush_via_queue, select):
-        "Test denorm_queue command."
+        "denorm_queue kicks one flush for pre-existing backlog + one per NOTIFY wake-up."
         call_command("denorm_queue", run_once=True)
         select.assert_called_once()
-        flush_via_queue.delay.assert_called_once()
+        # One .delay() right after LISTEN (startup backlog, spec 1.2),
+        # one after the select() wake-up.
+        self.assertEqual(flush_via_queue.delay.call_count, 2)
+
+    @patch("select.select")
+    @patch("denorm.tasks.flush_via_queue")
+    def test_denorm_queue_drains_notifications(self, flush_via_queue, select):
+        "spec 1.1: poll()ed notifications must be drained, not accumulated forever."
+        from django.db import connection
+
+        connection.cursor()  # ensure the connection exists
+        pg_con = connection.connection
+        # Simulate notifications a previous poll() appended.
+        pg_con.notifies.append(object())
+        pg_con.notifies.append(object())
+
+        call_command("denorm_queue", run_once=True)
+
+        self.assertEqual(
+            list(pg_con.notifies),
+            [],
+            "denorm_queue must drain pg_con.notifies after poll(); the list "
+            "grows without bound in this long-running daemon otherwise.",
+        )
 
     def test_makemigrations(self):
         "Test makemigrations command."

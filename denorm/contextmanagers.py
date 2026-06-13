@@ -1,3 +1,4 @@
+"""Retained only as a documented anti-pattern exhibit for tests/test_deadlocks.py; not used by the library."""
 import contextlib
 
 

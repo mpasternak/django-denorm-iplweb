@@ -1,7 +1,7 @@
 from django.db import transaction
 from django.db.backends.utils import truncate_name
 
-from denorm.db import base, const
+from denorm.db import base
 
 
 class RandomBigInt(base.RandomBigInt):
@@ -32,14 +32,11 @@ class TriggerActionInsert(base.TriggerActionInsert):
         else:
             values = "VALUES (" + ", ".join(self.values) + ")"
 
-        denorm_queue_name = const.DENORM_QUEUE_NAME
-        sql = (
-            "BEGIN\n"
-            "    INSERT INTO %(table)s %(columns)s %(values)s;\n"
-            "EXCEPTION WHEN unique_violation THEN\n"
-            "    -- do nothing\n"
-            "END"
-        ) % locals()
+        # Bare ON CONFLICT DO NOTHING (no conflict target): catches any
+        # unique violation without naming the 0017 expression index, and —
+        # unlike the old EXCEPTION WHEN unique_violation block — opens no
+        # subtransaction per row (pg_subtrans SLRU contention under load).
+        sql = "INSERT INTO %(table)s %(columns)s %(values)s ON CONFLICT DO NOTHING" % locals()
         return sql, params
 
 
@@ -113,8 +110,14 @@ class Trigger(base.Trigger):
         if ct_field:
             ct_field = qn(ct_field)
             if event == "UPDATE":
+                # Outer parens are load-bearing: this element is AND-joined
+                # with the field-change conditions, and AND binds tighter
+                # than OR. Without them the WHEN would parse as
+                # "(fields changed AND OLD-ct-match) OR NEW-ct-match",
+                # firing on any matching NEW.content_type even when no
+                # watched field changed (harmless over-fire, but wasteful).
                 conditions.append(
-                    "(OLD.%(ctf)s = %(ct)s) OR (NEW.%(ctf)s = %(ct)s)"
+                    "((OLD.%(ctf)s = %(ct)s) OR (NEW.%(ctf)s = %(ct)s))"
                     % {"ctf": ct_field, "ct": content_type}
                 )
             elif event == "INSERT":
@@ -122,17 +125,18 @@ class Trigger(base.Trigger):
             elif event == "DELETE":
                 conditions.append("(OLD.%s = %s)" % (ct_field, content_type))
 
+        # Spec 2.2: emit change-detection as a CREATE TRIGGER ... WHEN clause
+        # instead of an IF inside the function body. Postgres evaluates WHEN
+        # before invoking the plpgsql function, so rows that touch no watched
+        # column (or carry the wrong content type) never enter plpgsql at all.
+        # WHEN may reference NEW only on INSERT and OLD only on DELETE (the
+        # condition builder above already respects that) and cannot contain
+        # subqueries (ours are plain column comparisons).
         if conditions:
-            cond = " AND ".join(conditions)
-            actions = "\n            ".join(action_list)
-            actions = (
-                """IF %(cond)s THEN
-            %(actions)s
-        END IF;"""
-                % locals()
-            )
+            when = "WHEN (%s)\n    " % " AND ".join(conditions)
         else:
-            actions = "\n        ".join(action_list)
+            when = ""
+        actions = "\n        ".join(action_list)
 
         comment = ""
         spaces = "        "
@@ -157,7 +161,8 @@ DROP TRIGGER IF EXISTS %(name)s ON %(table)s;
 
 CREATE TRIGGER %(name)s
     %(time)s %(event)s ON %(table)s
-    FOR EACH ROW EXECUTE PROCEDURE f_%(name)s();
+    FOR EACH ROW
+    %(when)sEXECUTE PROCEDURE f_%(name)s();
 """
             % locals()
         )

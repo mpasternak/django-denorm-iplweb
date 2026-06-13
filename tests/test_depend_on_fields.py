@@ -382,6 +382,88 @@ class TestTriggerSetShape:
                         "markers only."
                     )
 
+    def test_marker_inserts_use_on_conflict_not_subtransaction(self, db):
+        """A plpgsql EXCEPTION block opens a subtransaction on EVERY
+        execution — a known Postgres scalability cliff (pg_subtrans SLRU)
+        on hot write paths. Bare ON CONFLICT DO NOTHING has identical
+        dedup semantics with no subtransaction (spec 2.1)."""
+        from denorm.denorms import build_triggerset
+        from denorm.models import DirtyInstance
+
+        ts = build_triggerset()
+        table = DirtyInstance._meta.db_table
+        checked = 0
+        for trigger in ts.triggers.values():
+            for action in trigger.actions:
+                sql, _ = action.sql()
+                if table in sql and "INSERT" in sql.upper():
+                    checked += 1
+                    assert "ON CONFLICT DO NOTHING" in sql
+                    assert "EXCEPTION" not in sql.upper()
+        assert checked > 0
+
+    def test_update_trigger_conditions_live_in_when_clause(self, db):
+        """Postgres evaluates CREATE TRIGGER ... WHEN before invoking the
+        trigger function: rows that touch no watched column skip plpgsql
+        entirely (spec 2.2). The IF used to live inside the function."""
+        from denorm.denorms import build_triggerset
+
+        ts = build_triggerset()
+        profile_updates = [
+            t
+            for t in ts.triggers.values()
+            if t.db_table == "test_app_profile" and t.event == "update"
+        ]
+        assert profile_updates
+        for trigger in profile_updates:
+            sql, _ = trigger.sql()
+            assert "WHEN (" in sql, "UPDATE trigger lost its WHEN clause"
+            assert "IS DISTINCT FROM" in sql.split("CREATE TRIGGER")[1], (
+                "change-detection must sit in the CREATE TRIGGER WHEN "
+                "clause, after the function definition"
+            )
+            body = sql.split("$$")[1]  # the plpgsql function body
+            assert "IF " not in body, (
+                "function body still carries the IF — condition must move "
+                "to the WHEN clause so non-matching rows never invoke "
+                "plpgsql"
+            )
+
+    def test_generic_relation_when_parenthesises_content_type_or(self, db):
+        """The content-type element ``(OLD.ct = X) OR (NEW.ct = X)`` must be
+        wrapped in its own parens before being AND-joined with the
+        field-change conditions.
+
+        ``AND`` binds tighter than ``OR`` in SQL, so the unwrapped form
+
+            ((fields changed)) AND (OLD.ct = X) OR (NEW.ct = X)
+
+        parses as ``((fields changed) AND OLD-ct-match) OR NEW-ct-match`` —
+        the trigger fires whenever ``NEW.content_type`` matches even if no
+        watched field changed (over-fire). Safe — flush is idempotent — but
+        wasteful, and only correct by accident. Wrapping restores the intended
+        ``(fields changed) AND (content type relevant, old or new)``.
+        """
+        from denorm.denorms import build_triggerset
+
+        ts = build_triggerset()
+        generic_updates = [
+            t
+            for t in ts.triggers.values()
+            if t.event == "update" and t.content_type_field
+        ]
+        assert generic_updates, "expected a generic-relation UPDATE trigger"
+        for trigger in generic_updates:
+            sql, _ = trigger.sql()
+            ctf = trigger.content_type_field
+            ct = trigger.content_type
+            wrapped = '((OLD."%s" = %s) OR (NEW."%s" = %s))' % (ctf, ct, ctf, ct)
+            assert wrapped in sql, (
+                f"content-type OR group not parenthesised in {trigger.name()}; "
+                "AND/OR precedence makes the trigger over-fire on a matching "
+                "NEW.content_type even when no watched field changed"
+            )
+
 
 class TestMarkDirtyAndNullContract:
     def test_mark_dirty_emits_null_marker_and_flush_full_saves(
@@ -502,3 +584,42 @@ class TestMarkDirtyAndNullContract:
 
         with pytest.raises(ValueError):
             denorm.mark_dirty(Profile(first_name="X", last_name="Y"))
+
+
+class TestFlushQueryEfficiency:
+    def test_flush_single_uses_contenttype_cache(self, transactional_db, denorm_triggers):
+        """ContentType.objects.get(pk=...) bypasses Django's ContentType
+        cache — a 100k-marker flush issues 100k identical queries.
+        get_for_id() hits the per-process cache (spec 2.3)."""
+        from unittest.mock import patch
+
+        from test_app.models import Profile
+
+        from denorm import denorms
+        from denorm.models import DirtyInstance
+
+        p = Profile.objects.create(first_name="A", last_name="B")
+        denorms.flush()
+        DirtyInstance.objects.all().delete()
+        ct = ContentType.objects.get_for_model(Profile)
+        DirtyInstance.objects.create(
+            content_type=ct, object_id=p.pk, func_name="full_name"
+        )
+
+        with patch.object(
+            ContentType.objects, "get_for_id", wraps=ContentType.objects.get_for_id
+        ) as spy:
+            denorms.flush_single(ct.pk, p.pk)  # no content_type kwarg
+
+        spy.assert_called_once_with(ct.pk)
+
+    def test_marker_claim_matches_expression_index(self, db):
+        """The 0017 unique index keys on COALESCE(object_id, -1); a filter
+        on raw object_id can only use the content_type prefix, making a
+        large single-model flush O(N^2). The claim query must emit the
+        same COALESCE expression so both index columns are usable
+        (spec 2.6)."""
+        from denorm.denorms import _markers_for
+
+        sql = str(_markers_for(42, 7).query)
+        assert 'COALESCE("denorm_dirtyinstance"."object_id", -1)' in sql

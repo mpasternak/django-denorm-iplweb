@@ -552,28 +552,32 @@ def test_concurrent_rebuild_creates_duplicates(
 
 
 # ---------------------------------------------------------------------------
-# 9. flush_via_queue fan-out: one Celery task per DirtyInstance row.
+# 9. flush_via_queue fan-out: distinct pairs dispatched in chunks via flush_batch.
 # ---------------------------------------------------------------------------
 
 
 def test_flush_via_queue_fans_out_one_task_per_duplicate(
     transactional_db, denorm_triggers
 ):
-    """`flush_via_queue` enqueues one Celery subtask per distinct
-    (content_type_id, object_id) pair — not one per DirtyInstance row.
+    """`flush_via_queue` dispatches distinct (content_type_id, object_id)
+    pairs in chunks of DENORM_QUEUE_CHUNK_SIZE via `flush_batch` tasks —
+    not one task per DirtyInstance row and not one task per distinct pair.
+
     With heavy duplicate accumulation (test #6 — 20 updates = 120 rows),
     a naive fan-out would spawn 120 tasks where 1 would do. 119 of them
     would grab nothing via skip_locked, but still take a transaction,
     contend on the DirtyInstance index, and amplify the deadlock
     probability seen in test #3.
 
-    Subtasks are also keyed by the logical (content_type_id, object_id)
-    pair so Singleton dedup survives a representative marker being
-    deleted between enqueue and execution.
+    Chunking limits broker message count for very large backlogs: a
+    500k-row backlog with chunk_size=50 becomes 10k messages, not 500k.
+
+    Duplicates must collapse to exactly ONE pair in the dispatched chunks.
     """
     from test_app.models import Forum
 
     from denorm import tasks
+    from denorm.conf import settings as denorm_settings
     from denorm.models import DirtyInstance
 
     forum = Forum.objects.create(title="dup")
@@ -586,46 +590,47 @@ def test_flush_via_queue_fans_out_one_task_per_duplicate(
         ignore_conflicts=True,
     )
 
-    # Capture the signatures handed to celery.group(...) — that's the
+    # Capture the chunk lists handed to flush_batch.s(...) — that's the
     # fan-out we care about. Bypass the Singleton + Celery broker machinery
     # by calling the wrapped function directly via .run() and stubbing
-    # `group` and `flush_single.s` so nothing tries to talk to redis.
-    captured_pairs: list[tuple[int, int]] = []
+    # `group` and `flush_batch.s` so nothing tries to talk to redis.
+    captured_chunks: list[list] = []
 
-    def _stub_signature(*, content_type_id, object_id):
-        captured_pairs.append((content_type_id, object_id))
-        return ("signature", content_type_id, object_id)
+    def _stub_signature(*, pairs):
+        captured_chunks.append(list(pairs))
+        return ("signature", pairs)
 
     class _StubGroup:
         def __init__(self, sigs):
             # group() takes a generator of signatures — we must iterate
-            # it here so `flush_single.s(...)` actually runs (and our
+            # it here so `flush_batch.s(...)` actually runs (and our
             # stub captures the call). Otherwise the generator is
-            # discarded unevaluated and captured_pairs stays empty.
+            # discarded unevaluated and captured_chunks stays empty.
             self.sigs = list(sigs)
 
         def apply_async(self):
             return None
 
     with (
-        patch.object(tasks.flush_single, "s", side_effect=_stub_signature),
+        patch.object(tasks.flush_batch, "s", side_effect=_stub_signature),
         patch("denorm.tasks.group", _StubGroup),
     ):
         tasks.flush_via_queue.run()
 
-    distinct = (
-        DirtyInstance.objects.values("content_type_id", "object_id").distinct().count()
+    # all distinct pairs are covered exactly once, in ceil(n/chunk) batches
+    flat = [pair for chunk in captured_chunks for pair in chunk]
+    distinct = list(
+        DirtyInstance.objects.values_list("content_type_id", "object_id").distinct()
     )
-    assert len(captured_pairs) == distinct, (
-        f"flush_via_queue dispatched {len(captured_pairs)} subtasks for "
-        f"{distinct} distinct (CT, object_id) pairs. Each duplicate row "
-        "causes a redundant task that holds a transaction and contends "
-        "on the DirtyInstance index."
+    assert sorted(flat) == sorted(distinct), (
+        f"flush_via_queue dispatched {flat!r} but expected distinct pairs {distinct!r}. "
+        "Duplicate DirtyInstance rows must collapse to ONE pair total."
     )
-    assert captured_pairs == [(forum_ct.pk, forum.pk)], (
-        "Subtasks should be keyed by the logical (content_type_id, object_id) "
-        "pair, not by a representative DirtyInstance pk that can disappear "
-        "between enqueue and execution."
+    assert all(
+        len(c) <= denorm_settings.DENORM_QUEUE_CHUNK_SIZE for c in captured_chunks
+    ), (
+        f"Some chunk exceeds DENORM_QUEUE_CHUNK_SIZE={denorm_settings.DENORM_QUEUE_CHUNK_SIZE}: "
+        f"{[len(c) for c in captured_chunks]}"
     )
 
 
@@ -1074,10 +1079,21 @@ def test_denorm_queue_survives_listen_connection_drop(
     def run_queue():
         queue_started.set()
         try:
-            # Note: handle() blocks forever; if the loop survives the drop,
-            # this call never returns and the daemon thread stays alive
-            # until the test process exits — which is fine.
-            call_command("denorm_queue")
+            # Spec 1.2 added a startup backlog kick (flush_via_queue.delay()
+            # right after LISTEN, and one per reconnect). This suite has no
+            # broker/Redis, so a real .delay() would raise and — because
+            # AttributeError is a reconnect trigger — wedge the loop in an
+            # endless reconnect, never stabilizing the LISTEN. Stub the kick
+            # to a no-op: this test is about surviving the connection drop,
+            # not about Celery dispatch.
+            with patch(
+                "denorm.management.commands.denorm_queue.flush_via_queue.delay",
+                return_value=None,
+            ):
+                # Note: handle() blocks forever; if the loop survives the
+                # drop, this call never returns and the daemon thread stays
+                # alive until the test process exits — which is fine.
+                call_command("denorm_queue")
         except BaseException as e:  # noqa: BLE001
             queue_error.append((type(e).__name__, str(e)[:200]))
 
@@ -1284,4 +1300,97 @@ def test_concurrent_marker_survives_inflight_flush(
         "marker. The denormalized value is now silently stale. Claimed "
         "markers must be deleted at claim time so colliding inserts wait "
         "for our commit instead of being dropped (audit spec item 1.5)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 17. Spec 1.3: celery-singleton locks must expire.
+# ---------------------------------------------------------------------------
+
+
+def test_singleton_tasks_carry_lock_expiry():
+    """Without lock_expiry, a SIGKILLed worker leaves the Redis lock
+    forever and that (content_type, object) pair can never be enqueued
+    again — denormalization for the object silently stops."""
+    from denorm import tasks
+    from denorm.conf import settings as denorm_settings
+
+    assert denorm_settings.DENORM_SINGLETON_LOCK_EXPIRY == 600
+    for task in (tasks.flush_single, tasks.flush_via_queue):
+        assert task.lock_expiry == denorm_settings.DENORM_SINGLETON_LOCK_EXPIRY, (
+            f"{task.name} has no lock_expiry; a crashed worker permanently "
+            "wedges this Singleton."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 18. Spec 1.4: AggregateField.pre_save read-then-write loses concurrent
+# trigger increments.
+# ---------------------------------------------------------------------------
+
+
+def test_countfield_save_does_not_clobber_concurrent_increment(
+    transactional_db, denorm_triggers
+):
+    """AggregateField.pre_save SELECTs the trigger-maintained counter and
+    save() writes that value back. An increment committed between the
+    SELECT and the UPDATE is silently overwritten. Fix: write
+    `col = col` (an F() expression) so the UPDATE can never lose
+    concurrent increments.
+
+    Staged deterministically: a hook between pre_save and the UPDATE
+    commits a child insert (trigger increments the counter), then the
+    parent save proceeds.
+    """
+    from test_app.models import Forum, Post
+
+    from denorm import denorms
+    from denorm.fields import AggregateField
+    from denorm.models import DirtyInstance
+
+    forum = Forum.objects.create(title="cnt")
+    denorms.flush()
+    DirtyInstance.objects.all().delete()
+    forum.refresh_from_db()
+    assert forum.post_count == 0
+
+    orig_pre_save = AggregateField.pre_save
+    state = {"fired": False}
+
+    def racing_pre_save(self, instance, add):
+        value = orig_pre_save(self, instance, add)
+        if not add and not state["fired"]:
+            state["fired"] = True
+
+            def writer():
+                from django.db import connections
+
+                try:
+                    # Own thread = own connection (autocommit): the child
+                    # commits and its trigger increments forum.post_count
+                    # BEFORE the parent's UPDATE executes.
+                    Post.objects.create(forum_id=instance.pk, title="mid-save")
+                finally:
+                    for alias in connections:
+                        try:
+                            connections[alias].close()
+                        except Exception:
+                            pass
+
+            t = threading.Thread(target=writer, daemon=True)
+            t.start()
+            t.join(timeout=30)
+            assert not t.is_alive(), "writer hung — unexpected lock"
+        return value
+
+    with patch.object(AggregateField, "pre_save", racing_pre_save):
+        forum.save()
+
+    count_in_db = Forum.objects.values_list("post_count", flat=True).get(
+        pk=forum.pk
+    )
+    assert count_in_db == 1, (
+        "Parent save() overwrote the trigger-maintained counter with the "
+        "value read before the concurrent increment committed (lost "
+        "update). pre_save must emit `col = col`, not a snapshot value."
     )

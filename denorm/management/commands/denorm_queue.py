@@ -78,6 +78,12 @@ class Command(BaseCommand):
 
         logger.info("denorm_queue: listening on channel '%s'", const.DENORM_QUEUE_NAME)
 
+        # Spec 1.2: PostgreSQL does not queue NOTIFYs for disconnected
+        # listeners. Dirty rows accumulated while we were down (deploy,
+        # failover) would otherwise sit until the next unrelated write —
+        # kick one flush for the backlog. Singleton dedups if one is queued.
+        flush_via_queue.delay()
+
         ran_once = False
         while True:
             if ran_once and run_once:
@@ -91,4 +97,9 @@ class Command(BaseCommand):
             # Will raise on a dead connection — propagate so handle()
             # can reconnect with backoff.
             pg_con.poll()
+            # Spec 1.1: poll() appends every NOTIFY to pg_con.notifies and
+            # never removes them — drain, or this daemon leaks memory under
+            # sustained write traffic. The payload is empty; arrival is the
+            # only signal.
+            del pg_con.notifies[:]
             flush_via_queue.delay()

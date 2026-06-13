@@ -4,6 +4,8 @@ Changelog
 1.12.0 (unreleased)
 -------------------
 
+* **Dropped Django 4.2 support** (extended support ended April 2026).
+  Minimum is now Django 5.2 LTS. CI tests Django 5.2 and 6.0.
 * fix: ``flush_single`` now deletes claimed ``DirtyInstance`` markers at
   claim time. Previously, the unique-index dedup could silently swallow
   concurrent invalidation markers inserted between the claim and the
@@ -42,7 +44,73 @@ Changelog
   ``DENORM_DISABLE_AUTOTIME_DURING_FLUSH`` now only applies to
   whole-object (``func_name=NULL``) flushes.
 * **Upgrade note**: run ``manage.py denorm_rebuild_triggers`` after
-  upgrading — trigger SQL changed shape (per-function markers).
+  upgrading — trigger SQL changed shape (per-function markers, ON CONFLICT,
+  WHEN clause).
+* fix: ``denorm_queue`` now drains ``pg_con.notifies`` after each
+  ``poll()`` call. Previously, the list grew without bound under
+  sustained write traffic, leaking memory in this long-running daemon
+  (spec 1.1).
+* fix: ``denorm_queue`` fires one ``flush_via_queue.delay()`` immediately
+  after ``LISTEN`` succeeds, before entering the select loop. PostgreSQL
+  does not queue NOTIFYs for disconnected listeners; dirty rows
+  accumulated during a deploy or failover are now flushed without waiting
+  for the next unrelated write. ``Singleton`` deduplicates if a flush is
+  already queued (spec 1.2).
+* fix: ``DENORM_SINGLETON_LOCK_EXPIRY`` setting (default ``600`` seconds)
+  is now passed as ``lock_expiry`` to every ``celery-singleton``-based
+  task. Without an expiry, a SIGKILLed worker left its Redis lock
+  forever, permanently wedging enqueuing for the affected object (spec 1.3).
+* fix: ``CountField`` / ``SumField`` ``pre_save`` no longer SELECTs the
+  current counter and writes it back. It now writes ``col = col`` (a
+  Django ``F()`` expression), resolved inside the ``UPDATE`` itself.
+  A concurrent trigger increment between any read and the UPDATE can no
+  longer be silently overwritten. **Contract note**: ``save()`` leaves
+  the in-memory attribute untouched; call ``refresh_from_db()`` when the
+  current value matters (spec 1.4).
+* perf: dirty-marker ``INSERT`` statements now use
+  ``ON CONFLICT DO NOTHING`` instead of a plpgsql ``EXCEPTION`` block.
+  The ``EXCEPTION`` form opened a subtransaction on every execution
+  (even when no conflict occurred), a known PostgreSQL scalability cliff
+  under high write concurrency (spec 2.1). Re-run
+  ``manage.py denorm_rebuild_triggers`` after upgrading.
+* perf: UPDATE-trigger change-detection (``OLD.col IS DISTINCT FROM
+  NEW.col``) now lives in the ``CREATE TRIGGER … WHEN (…)`` clause
+  instead of an ``IF`` inside the trigger function. PostgreSQL evaluates
+  ``WHEN`` before invoking plpgsql, so rows that touch no watched column
+  skip the function entirely (spec 2.2). Re-run
+  ``manage.py denorm_rebuild_triggers`` after upgrading.
+* perf: ``flush_single`` now resolves ``ContentType`` via
+  ``ContentType.objects.get_for_id()`` (process-level cache) instead of
+  ``ContentType.objects.get(pk=…)``. A 100k-row flush previously issued
+  100k identical queries (spec 2.3). ``flush()`` now iterates distinct
+  pairs with ``.iterator(chunk_size=2000)`` (server-side cursor) instead
+  of materialising the full list in memory (spec 2.4).
+* perf: ``flush_via_queue`` now dispatches a ``celery.group`` of
+  ``flush_batch`` tasks, each covering ``DENORM_QUEUE_CHUNK_SIZE``
+  (default ``50``) ``(content_type_id, object_id)`` pairs. Previously
+  one Celery task was created per pair — a 500k-row backlog produced
+  500k broker messages. The legacy ``flush_single`` task is kept as a
+  thin wrapper for one release so tasks already sitting in brokers during
+  a rolling deploy continue to execute (spec 2.4).
+* perf: marker-claim queries now use
+  ``COALESCE(object_id, -1)`` to match the expression index created in
+  migration 0017, making per-object marker lookups O(log N) instead of
+  O(N) for content-type-dominated backlogs (spec 2.6). Three redundant
+  indexes were removed (``func_name``, ``created_on``, and the automatic
+  FK index on ``content_type``); migration ``0018`` handles this.
+  Users who filter ``DirtyInstance`` themselves should review
+  ``pg_stat_user_indexes`` and re-add needed indexes in their own apps.
+* ``denorm_flush_via_queue`` command now uses ``result.get(timeout=…)``
+  instead of ``time.sleep(0.5)`` and times progress against the number
+  of dispatched tasks rather than raw ``DirtyInstance`` rows. A Celery
+  result backend is required (spec 3.2).
+* Dead code removed: Django < 4.2 compatibility branches
+  (``add_lazy_relation``, Django 1.8–1.10 try/excepts, version-guarded
+  middleware wrapper); unused ``DirtyInstance`` helpers
+  (``DEFAULT_TIMEOUT``, ``WEEK_AGO``, ``find_similar``,
+  ``delete_similar``, ``delete_this_and_similar``); unused
+  ``denorm_queue_name`` variable in ``db/triggers.py``; unused
+  ``Denorm.update()`` (spec 3.3).
 
 1.11.1
 ------

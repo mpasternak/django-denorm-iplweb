@@ -22,7 +22,6 @@ except ImportError:
 from django.db import close_old_connections, connection, connections, transaction
 from django.db.models import ManyToManyField, sql
 from django.db.models.aggregates import Sum
-from django.db.models.manager import Manager
 from django.db.models.query_utils import Q
 from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql.datastructures import Join
@@ -45,10 +44,7 @@ def many_to_many_pre_save(sender, instance, **kwargs):
             if hasattr(m2m, "denorm"):
                 # Does some extra jiggery-pokery for "through" m2m models.
                 # May not work under lots of conditions.
-                try:
-                    remote = m2m.remote_field  # Django>=1.10
-                except AttributeError:
-                    remote = m2m.rel
+                remote = m2m.remote_field
                 if hasattr(remote, "through_model"):
                     # Clear exisiting through records (bit heavy handed?)
                     kwargs = {m2m.related.var_name: instance}
@@ -64,10 +60,7 @@ def many_to_many_pre_save(sender, instance, **kwargs):
 
                 else:
                     values = m2m.denorm.func(instance)
-                    try:
-                        getattr(instance, m2m.attname).set(values)
-                    except AttributeError:  # Django<1.10
-                        setattr(instance, m2m.attname, values)
+                    getattr(instance, m2m.attname).set(values)
 
 
 def many_to_many_post_save(sender, instance, created, **kwargs):
@@ -115,49 +108,6 @@ class Denorm:
         Adds 'self' to the global denorm list
         and connects all needed signals.
         """
-
-    def update(self, instance):
-        """
-        Updates the denormalizations in all instances in the queryset 'qs'.
-        """
-
-        # Get attribute name (required for denormalising ForeignKeys)
-        field = instance._meta.get_field(self.fieldname)
-        attname = field.attname
-
-        attr = getattr(instance, attname)
-
-        # only write new values to the DB if they actually changed
-        new_value = self.func(instance)
-
-        if isinstance(attr, Manager):
-            # for a many to many field the decorated
-            # function should return a list of either model instances
-            # or primary keys
-            old_pks = {x.pk for x in attr.all()}
-            new_pks = set()
-
-            for x in new_value:
-                # we need to compare sets of objects based on pk values,
-                # as django lacks an identity map.
-                if hasattr(x, "pk"):
-                    new_pks.add(x.pk)
-                else:
-                    new_pks.add(x)
-
-            if old_pks != new_pks:
-                setattr(instance, attname, new_value)
-                return {}
-
-        elif attr != new_value:
-            if hasattr(field, "related_field") and isinstance(
-                new_value, field.related_field.model
-            ):
-                setattr(instance, attname, None)
-                setattr(instance, field.name, new_value)
-            else:
-                setattr(instance, attname, new_value)
-            return {field.name: new_value}
 
     def get_triggers(self, using):
         return []
@@ -530,10 +480,7 @@ class AggregateDenorm(Denorm):
 
         qn = self.get_quote_name(using)
 
-        try:  # Django>=1.9
-            related_field = self.manager.field
-        except AttributeError:
-            related_field = self.manager.related.field
+        related_field = self.manager.field
         if isinstance(related_field, ManyToManyField):
             fk_name = related_field.m2m_reverse_name()
             inc_where = [
@@ -556,10 +503,7 @@ class AggregateDenorm(Denorm):
             contenttypes.models.ContentType.objects.get_for_model(self.model).pk
         )
 
-        if hasattr(self.manager, "field"):  # Django>=1.9
-            related_model = self.manager.field.model
-        else:  # Django>=1.8
-            related_model = self.manager.related.related_model
+        related_model = self.manager.field.model
         inc_query = TriggerFilterQuery(related_model, trigger_alias="NEW")
         inc_query.add_q(Q(**self.filter))
         inc_query.add_q(~Q(**self.exclude))
@@ -947,6 +891,27 @@ class _DirtyInstanceFlushProgress:
         self._bar.refresh()
 
 
+def _markers_for(content_type_id, object_id):
+    """All markers for the logical pair, filtered so the 0017 expression
+    index is fully usable.
+
+    The unique index keys on COALESCE(object_id, -1); filtering the raw
+    column would fall back to scanning the whole content-type prefix —
+    O(backlog) per object, O(backlog^2) per flush.
+    """
+    from django.db.models import Value
+    from django.db.models.functions import Coalesce
+
+    from .models import DirtyInstance
+
+    return DirtyInstance.objects.alias(
+        _oid=Coalesce("object_id", Value(-1))
+    ).filter(
+        content_type_id=content_type_id,
+        _oid=-1 if object_id is None else object_id,
+    )
+
+
 def _claim_and_delete_markers(content_type_id, object_id):
     """Lock, snapshot and DELETE all claimable markers for the pair.
 
@@ -960,9 +925,7 @@ def _claim_and_delete_markers(content_type_id, object_id):
     from .models import DirtyInstance
 
     locked_pks = list(
-        DirtyInstance.objects.filter(
-            content_type_id=content_type_id, object_id=object_id
-        )
+        _markers_for(content_type_id, object_id)
         .select_for_update(skip_locked=True)
         .values_list("pk", flat=True)
     )
@@ -987,7 +950,7 @@ def flush_single(content_type_id, object_id, content_type=None):
     if content_type is None:
         from django.contrib.contenttypes.models import ContentType
 
-        content_type = ContentType.objects.get(pk=content_type_id)
+        content_type = ContentType.objects.get_for_id(content_type_id)
 
     with transaction.atomic():
         klass = content_type.model_class()
@@ -1123,6 +1086,7 @@ def flush(
                 DirtyInstance.objects.all()
                 .values_list("content_type_id", "object_id")
                 .distinct()
+                .iterator(chunk_size=2000)
             ):
                 flush_single(content_type_id, object_id)
                 processed += 1
