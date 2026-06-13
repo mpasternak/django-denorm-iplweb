@@ -576,6 +576,67 @@ One commit per removal category; run full suite after each.
   (safe over-fire — flush is idempotent — but wasteful). Now wrapped:
   `(fields...) AND ((OLD.ctf = X) OR (NEW.ctf = X))`. Pinned by
   `test_generic_relation_when_parenthesises_content_type_or`.
+* ❌ **REJECTED — automatic on-commit flusher.** Considered hooking
+  `transaction.on_commit` to flush after every transaction (so denorm
+  fields settle automatically at transaction boundaries). Rejected: it
+  reintroduces the synchronous coupling the deferred design deliberately
+  avoids — it would block the writing thread and is pathological for bulk
+  writes and deep cascades (one write can dirty thousands of dependent
+  objects). It also adds no capability that `denorm.flush()` /
+  `denorm.mark_dirty()` don't already provide on demand. And
+  `transaction.on_commit` callbacks do **not** fire under `TestCase`'s
+  rolled-back transaction, so it could not even serve the test use-case
+  that motivated it (that role goes to `DENORM_ALWAYS_EAGER` below).
+
+## Planned (not yet implemented)
+
+* **`DENORM_ALWAYS_EAGER` — synchronous flush for tests.** A setting
+  (default `False`) mirroring Celery's `task_always_eager`. When enabled,
+  denorm flushes synchronously after each write (`post_save` /
+  `post_delete` / `m2m_changed`) so denorm fields — including those on
+  *dependent* objects — are correct immediately, without a manual
+  `denorm.flush()` and without a Celery worker. `flush()` already drains
+  to convergence; the only new behaviour is the automatic trigger.
+
+  Primary audience: **downstream projects' test suites** (no `flush()`
+  boilerplate, no forgotten-flush bugs). denorm's *own* tests of deferred /
+  queue behaviour must keep it `False` and control flush timing explicitly.
+
+  Implementation notes: connect a signal handler that calls `flush()`,
+  guarded by a thread-local re-entrancy flag — `flush()` saves objects,
+  which re-fire `post_save`, which must not recurse; the outer `flush()`
+  loop already converges everything. Do **not** use
+  `transaction.on_commit` (does not fire under `TestCase` rollback);
+  `post_save` sees the trigger-inserted markers because row triggers fire
+  during the statement, before the Python signal. Verify the
+  `select_for_update(skip_locked=True)`-on-own-row interaction (a
+  transaction can re-lock its own rows; `skip_locked` only skips *other*
+  transactions' locks). Default off; document as test-only and as changing
+  timing semantics versus production. **Scheduled last** in the current
+  effort (after the celery-broker test spike and the `flush_single`
+  convergence loop). Needs tests + `docs/reference.rst` + `HISTORY.rst`.
+
+* **`@denorm_always_dirty` — model decorator (future, unscheduled).** A
+  class decorator that connects a `post_save` handler unconditionally
+  inserting a `(content_type, pk, func_name=NULL)` whole-object marker —
+  effectively auto-calling `denorm.mark_dirty(instance)` on every save of
+  the model.
+
+  Use case: models whose denormalized values depend on inputs the trigger /
+  `depend_on_related` / `depend_on_fields` system cannot express (external
+  or computed state, time-based values, reads too complex for a trigger to
+  watch). It guarantees a recompute on every save, processed by the normal
+  asynchronous flush.
+
+  Distinct from the existing self-trigger, which fires only on INSERT and on
+  UPDATE-of-watched-columns: `@denorm_always_dirty` fires on **every**
+  `save()` regardless of which columns changed. Known limitation to
+  document: being `post_save`-based it does **not** cover
+  `QuerySet.update()` / bulk writes (no signal) — the self-trigger still
+  covers those for watched columns. Open design questions for when it is
+  picked up: whole-object NULL vs. an optional per-field variant;
+  interaction with `DENORM_BULK_UNSAFE_TRIGGERS`. Needs tests +
+  `docs/reference.rst` + `HISTORY.rst`.
 
 ## Rollout
 
