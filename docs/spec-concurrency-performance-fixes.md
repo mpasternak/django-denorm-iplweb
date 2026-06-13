@@ -568,16 +568,14 @@ One commit per removal category; run full suite after each.
   of escalating to full saves.
 * **Parallelizing `flush()`** — the celery path already provides
   parallelism; keep the inline path simple.
-* **Generic-relation UPDATE trigger WHEN expression operator-precedence
-  wart.** The content-type element `(OLD.ctf = X) OR (NEW.ctf = X)` is
-  AND-joined unparenthesized with the field-change conditions, so AND
-  binds tighter and the trigger over-fires when NEW matches a watched
-  content-type but no watched column changed. The behaviour is safe
-  (over-fire only; flush is idempotent) and was bug-for-bug preserved by
-  2.2 (which moved the same condition into the `WHEN` clause). Fix in a
-  follow-up: wrap the content-type OR element in its own parentheses so
-  the full expression reads
-  `((OLD.ctf = X) OR (NEW.ctf = X)) AND (OLD.col IS DISTINCT FROM NEW.col)`.
+* ✅ SHIPPED (1.12.0) — **Generic-relation UPDATE trigger WHEN expression
+  operator-precedence wart.** The content-type element
+  `(OLD.ctf = X) OR (NEW.ctf = X)` was AND-joined unparenthesized with the
+  field-change conditions, so AND bound tighter and the trigger over-fired
+  when NEW matched a watched content-type but no watched column changed
+  (safe over-fire — flush is idempotent — but wasteful). Now wrapped:
+  `(fields...) AND ((OLD.ctf = X) OR (NEW.ctf = X))`. Pinned by
+  `test_generic_relation_when_parenthesises_content_type_or`.
 
 ## Rollout
 
