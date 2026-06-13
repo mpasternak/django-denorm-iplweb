@@ -915,11 +915,12 @@ def _markers_for(content_type_id, object_id):
 def _claim_and_delete_markers(content_type_id, object_id):
     """Lock, snapshot and DELETE all claimable markers for the pair.
 
-    Returns (claimed_any, func_names). Deleting at claim time (inside the
-    caller's transaction) frees the unique-index key, so a colliding
-    marker INSERT — from this transaction's own save() triggers or from a
-    concurrent writer — waits for our commit instead of being silently
-    dropped by the unique_violation handler.
+    Returns the set of claimed ``func_name`` values (an empty set when
+    nothing is claimable; ``None`` membership means a whole-object marker).
+    Deleting at claim time (inside the caller's transaction) frees the
+    unique-index key, so a colliding marker INSERT — from this transaction's
+    own save() triggers or from a concurrent writer — waits for our commit
+    instead of being silently dropped by the unique_violation handler.
     See docs/spec-concurrency-performance-fixes.md item 1.5.
     """
     from .models import DirtyInstance
@@ -930,14 +931,54 @@ def _claim_and_delete_markers(content_type_id, object_id):
         .values_list("pk", flat=True)
     )
     if not locked_pks:
-        return False, set()
+        return set()
     func_names = set(
         DirtyInstance.objects.filter(pk__in=locked_pks).values_list(
             "func_name", flat=True
         )
     )
     DirtyInstance.objects.filter(pk__in=locked_pks).delete()
-    return True, func_names
+    return func_names
+
+
+def _build_save_kwargs(
+    obj, func_names, disable_autotime_during_flush, autotime_field_names
+):
+    """Translate claimed marker func_names into save() keyword arguments.
+
+    NULL (None) in ``func_names`` -> full save (no update_fields); otherwise
+    ``update_fields`` of the validated denorm field names, minus any auto_now
+    field exclusions when autotime suppression is enabled during flush.
+    """
+    kw = {}
+    if None not in func_names:
+        update_fields = []
+        for func_name in func_names:
+            try:
+                obj._meta.get_field(func_name)
+                update_fields.append(func_name)
+            except FieldDoesNotExist:
+                continue
+        if update_fields:
+            kw["update_fields"] = update_fields
+
+    if disable_autotime_during_flush and autotime_field_names:
+        # Build an explicit update_fields that EXCLUDES auto_now fields,
+        # so save() doesn't touch them. This replaces the old
+        # suppress_autotime() approach which mutated class-level
+        # Field.auto_now and leaked across threads.
+        if "update_fields" in kw:
+            kw["update_fields"] = [
+                f for f in kw["update_fields"] if f not in autotime_field_names
+            ]
+        else:
+            kw["update_fields"] = [
+                f.name
+                for f in obj._meta.local_fields
+                if not f.primary_key and f.name not in autotime_field_names
+            ]
+
+    return kw
 
 
 @retry_on_serialization_failure
@@ -976,39 +1017,46 @@ def flush_single(content_type_id, object_id, content_type=None):
         # marker still exists, the unique index silently swallows identical
         # marker inserts (our own save's triggers, concurrent writers),
         # losing invalidations.
-        claimed, func_names = _claim_and_delete_markers(content_type.pk, object_id)
-        if not claimed:
+        func_names = _claim_and_delete_markers(content_type.pk, object_id)
+        if not func_names:
             return
 
-        kw = {}
-        if None not in func_names:
-            update_fields = []
-            for func_name in func_names:
-                try:
-                    obj._meta.get_field(func_name)
-                    update_fields.append(func_name)
-                except FieldDoesNotExist:
-                    continue
-            if update_fields:
-                kw["update_fields"] = update_fields
-
-        if disable_autotime_during_flush and autotime_field_names:
-            # Build an explicit update_fields that EXCLUDES auto_now fields,
-            # so save() doesn't touch them. This replaces the old
-            # suppress_autotime() approach which mutated class-level
-            # Field.auto_now and leaked across threads.
-            if "update_fields" in kw:
-                kw["update_fields"] = [
-                    f for f in kw["update_fields"] if f not in autotime_field_names
-                ]
-            else:
-                kw["update_fields"] = [
-                    f.name
-                    for f in obj._meta.local_fields
-                    if not f.primary_key and f.name not in autotime_field_names
-                ]
-
-        obj.save(**kw)
+        # Convergence loop (audit spec 2.5): a save() that changes a stored
+        # value fires triggers that insert NEW markers for this same object
+        # (a same-model denorm chain, e.g. full_name -> letterhead). Those
+        # markers are created in OUR transaction and are visible to a re-claim
+        # before commit (the same MVCC fact spec 1.5 relies on), so we process
+        # them here instead of leaving them for another outer flush() pass.
+        #
+        # Reusing the locked, in-memory `obj` across iterations is safe: we
+        # hold select_for_update(of=('self',)) on the row for the whole
+        # transaction, so no concurrent write can change this object's own
+        # source columns, and the own-column trigger exclusion means our own
+        # saves never re-mark themselves. The re-claimed markers are therefore
+        # genuine downstream chain links (recomputed from in-memory denorm
+        # fields prior pre_save already refreshed) or dependency-driven markers
+        # (recomputed via a fresh query) — never stale in-memory source data.
+        #
+        # Scope discipline: the re-claim filters to THIS (ct, oid) only;
+        # cascade markers for OTHER objects are left for the normal flush path.
+        for passes_left in range(settings.DENORM_MAX_CONVERGE_PASSES, 0, -1):
+            obj.save(
+                **_build_save_kwargs(
+                    obj,
+                    func_names,
+                    disable_autotime_during_flush,
+                    autotime_field_names,
+                )
+            )
+            if passes_left == 1:
+                # Cap reached: do NOT re-claim. Any markers our last save
+                # inserted (non-deterministic denorm functions, or a chain
+                # deeper than the cap) stay in the table and are handled by
+                # flush()'s outer loop, bounded by DENORM_MAX_FLUSH_PASSES.
+                break
+            func_names = _claim_and_delete_markers(content_type.pk, object_id)
+            if not func_names:
+                break
 
 
 def flush(
