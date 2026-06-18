@@ -10,8 +10,9 @@ from denorm.tasks import flush_via_queue
 class Command(BaseCommand):
     help = (
         "Recalculates the value of every denormalized field that was marked "
-        "dirty, using Celery queues. Requires a configured Celery result "
-        "backend (the command waits on the dispatched task group)."
+        "dirty, dispatching the work to Celery (flush_via_queue) and waiting "
+        "until the dirty table drains. Requires Celery workers consuming the "
+        "denorm queue (or eager mode)."
     )
 
     def add_arguments(self, parser):
@@ -19,10 +20,16 @@ class Command(BaseCommand):
             "--timeout",
             type=float,
             default=300.0,
-            help="Seconds to wait for the dispatch task (default 300).",
+            help="Seconds to wait for the dirty table to drain (default 300).",
+        )
+        parser.add_argument(
+            "--poll-interval",
+            type=float,
+            default=0.2,
+            help="Seconds between dirty-table polls (default 0.2).",
         )
 
-    def handle(self, timeout=300.0, **kwargs):
+    def handle(self, timeout=300.0, poll_interval=0.2, **kwargs):
         total_rows = DirtyInstance.objects.count()
         if total_rows == 0:
             self.stdout.write(self.style.SUCCESS("No dirty instances to flush."))
@@ -30,27 +37,31 @@ class Command(BaseCommand):
 
         self.stdout.write(f"Flushing {total_rows} dirty instance rows...")
 
-        result = flush_via_queue.apply_async()
-        try:
-            group_result = result.get(timeout=timeout)
-        except Exception as exc:  # no result backend, timeout, broker down
-            raise CommandError(
-                f"Could not obtain dispatch result ({exc!r}). This command "
-                "requires a Celery result backend."
-            )
+        # Fire-and-forget. flush_via_queue fans the current snapshot into
+        # flush_batch tasks via a chord whose callback (_flush_requeue)
+        # re-dispatches the next pass until the dirty table is empty, bounded by
+        # DENORM_MAX_QUEUE_PASSES. Convergence therefore spans MULTIPLE chords —
+        # there is no single GroupResult to await — so we dispatch once and poll
+        # the dirty table for completion instead.
+        flush_via_queue.delay()
 
-        if group_result is None:
-            self.stdout.write(self.style.SUCCESS("No tasks to process."))
-            return
-
-        total_tasks = len(group_result)
-        with tqdm(total=total_tasks, desc="Flushing", unit="batch") as pbar:
-            while not group_result.ready():
-                pbar.n = group_result.completed_count()
+        deadline = time.monotonic() + timeout
+        with tqdm(total=total_rows, desc="Flushing", unit="row") as pbar:
+            while True:
+                remaining = DirtyInstance.objects.count()
+                # Cascades can transiently add markers, so remaining may exceed
+                # the initial total; clamp progress to [0, total_rows].
+                pbar.n = max(0, total_rows - remaining)
                 pbar.refresh()
-                time.sleep(0.1)
-            pbar.n = total_tasks
-            pbar.refresh()
+                if remaining == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    raise CommandError(
+                        f"Timed out after {timeout}s with {remaining} dirty "
+                        "rows still pending. Are Celery workers running and "
+                        "consuming the denorm queue?"
+                    )
+                time.sleep(poll_interval)
 
         self.stdout.write(
             self.style.SUCCESS(f"Successfully flushed {total_rows} dirty rows.")

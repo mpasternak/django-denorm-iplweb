@@ -47,3 +47,14 @@ DENORM_MAX_QUEUE_PASSES = getattr(settings, "DENORM_MAX_QUEUE_PASSES", 100)
 # production (reintroduces synchronous coupling); default off keeps the
 # deferred model. See denorm/eager.py.
 DENORM_ALWAYS_EAGER = getattr(settings, "DENORM_ALWAYS_EAGER", False)
+
+# Controls how denorm.middleware.DenormMiddleware flushes after a request.
+# One of:
+#   "inline" (default) — flush synchronously during the response cycle.
+#   "queue"            — dispatch flush_via_queue to Celery; don't block the request.
+#   "off"              — never flush in the middleware; rely on the denorm_queue
+#                        daemon or a manual/cron flush instead.
+# In "inline"/"queue" modes the flush is skipped unless DirtyInstance markers
+# exist. The middleware reads this LIVE from django settings (so override_settings
+# works); this entry documents the default.
+DENORM_MIDDLEWARE_FLUSH = getattr(settings, "DENORM_MIDDLEWARE_FLUSH", "inline")

@@ -288,6 +288,22 @@ This can be accomplished by adding ``DenormMiddleware`` to ``MIDDLEWARE_CLASSES`
 
 As shown in the example, I recommend to place ``DenormMiddleware`` right after ``TransactionMiddleware``.
 
+The middleware only flushes when there is actually something to flush — it
+guards on ``DirtyInstance.objects.exists()`` (a cheap ``LIMIT 1`` query that is
+correct even for bulk and raw writes, since markers come from database
+triggers, not Python signals). Its behaviour is configurable via the
+``DENORM_MIDDLEWARE_FLUSH`` setting:
+
+* ``"inline"`` (default) — flush synchronously in the response cycle.
+* ``"queue"`` — dispatch ``flush_via_queue`` to Celery so the request is not
+  blocked; use this when you already run the queue (see below).
+* ``"off"`` — never flush here; rely on the ``denorm_queue`` daemon or a
+  manual/cron ``denorm_flush`` instead.
+
+So if you run the queue, you can either set ``"queue"`` (the middleware enqueues
+work without blocking the request) or ``"off"`` (the ``denorm_queue`` daemon
+picks everything up). See the :ref:`reference` for details.
+
 Using the queue
 ^^^^^^^^^^^^^^^
 

@@ -122,6 +122,9 @@ Management commands
 **denorm_queue**
     .. automodule:: denorm.management.commands.denorm_queue
 
+**denorm_flush_via_queue**
+    .. automodule:: denorm.management.commands.denorm_flush_via_queue
+
 **denorm_sql**
     .. automodule:: denorm.management.commands.denorm_sql
 
@@ -253,6 +256,23 @@ rows dirty; call ``denorm.flush()`` explicitly after bulk writes.
 ``DENORM_MAX_FLUSH_PASSES`` (default ``100``): ``flush()`` aborts with an
 error log naming the still-dirty models instead of looping forever when a
 denormalized function is non-deterministic.
+
+``DENORM_MIDDLEWARE_FLUSH`` (default ``"inline"``): controls how
+:class:`~denorm.middleware.DenormMiddleware` flushes after a request. One of:
+
+* ``"inline"`` — call ``denorm.flush()`` synchronously during the response
+  cycle (the historical behaviour).
+* ``"queue"`` — dispatch ``flush_via_queue`` to Celery and return immediately,
+  so the request is not blocked by the flush. Use this when you already run
+  Celery workers for denorm.
+* ``"off"`` — never flush in the middleware; rely on the ``denorm_queue``
+  LISTEN/NOTIFY daemon (or a manual/cron ``denorm_flush``) instead.
+
+In ``"inline"`` and ``"queue"`` modes the flush is skipped entirely unless at
+least one :class:`~denorm.models.DirtyInstance` marker exists. The
+``exists()`` guard is a cheap ``LIMIT 1`` query and is correct even for bulk
+and raw writes, because markers are created by database triggers rather than
+by Python signals.
 
 ``DENORM_DIRTY_INSTANCES_VIEW_ACCESS`` (default ``"staff"``): access policy
 for the ``dirty_instances_count`` view. Accepts ``"staff"``,

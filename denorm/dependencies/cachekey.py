@@ -243,7 +243,7 @@ class CacheKeyDependOnRelated(DependOnRelated):
                     columns=(self.fieldname,),
                     values=(triggers.RandomBigInt(),),
                     where=(
-                        self.this_model._meta.pk.get_attname_column()[1]
+                        qn(self.this_model._meta.pk.get_attname_column()[1])
                         + " IN ("
                         + sql
                         + ")",
