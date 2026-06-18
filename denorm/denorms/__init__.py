@@ -426,6 +426,26 @@ def flush(
                 return
             passes += 1
 
+            # NOTE: it is tempting to rewrite this DISTINCT over the
+            # COALESCE(object_id, -1) expression so it "matches" the migration
+            # 0017 index. Don't — it does not help. EXPLAIN (ANALYZE, BUFFERS)
+            # on a 60k-marker table (measured on both PostgreSQL 16.13 and
+            # 18.4) shows the planner already picks the cheapest plan: a
+            # HashAggregate over a single Seq Scan of this narrow 2-column
+            # projection (~442 buffers, identical on both versions). The
+            # alternatives are all worse:
+            #   * COALESCE rewrite + ORDER BY: same HashAggregate+SeqScan with
+            #     an extra Sort bolted on top — strictly more expensive.
+            #   * Forcing the expression index: a full Index Scan + Unique
+            #     (~60k buffers, "Index Searches: 1" — no skipping).
+            #   * Recursive-CTE loose scan (~18k buffers): only wins when the
+            #     distinct cardinality is tiny vs the row count, which it never
+            #     is here — the 0017 unique index dedupes by func_name, so
+            #     distinct (content_type_id, object_id) cardinality stays high.
+            # PostgreSQL 18 native B-tree skip scan does NOT engage for this
+            # DISTINCT-over-COALESCE shape (verified on 18.4: still a full Index
+            # Scan when forced), so it changes nothing here either.
+            # See test_flush_distinct for the NULL->None handling contract.
             processed = 0
             for content_type_id, object_id in (
                 DirtyInstance.objects.all()
