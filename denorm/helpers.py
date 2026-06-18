@@ -70,8 +70,11 @@ def find_fks(from_model, to_model, fk_name=None):
     # get all ForeignKeys
     fkeys = [x for x in from_model._meta.fields if isinstance(x, models.ForeignKey)]
 
-    # filter out all FKs not pointing to 'to_model'
-    fkeys = [x for x in fkeys if repr(remote_field_model(x)).lower() == repr(to_model).lower()]
+    # filter out all FKs not pointing to 'to_model'. Compare the resolved model
+    # classes by identity, not by repr() string: repr-comparison was lowercased
+    # (so two models differing only in case would collapse) and stringly-typed
+    # for no benefit — distinct classes already compare unequal.
+    fkeys = [x for x in fkeys if remote_field_model(x) == to_model]
 
     # if 'fk_name' was given, filter out all FKs not matching that name, leaving
     # only one (or none)
@@ -94,8 +97,11 @@ def find_m2ms(from_model, to_model, m2m_name=None):
         private_fields = from_model._meta.virtual_fields
     m2ms = list(from_model._meta.many_to_many) + private_fields
 
-    # filter out all M2Ms not pointing to 'to_model'
-    m2ms = [x for x in m2ms if repr(remote_field_model(x)).lower() == repr(to_model).lower()]
+    # filter out all M2Ms not pointing to 'to_model' (identity, not repr — see
+    # find_fks). remote_field_model() returns None for fields with no relation
+    # (e.g. a GenericForeignKey in private_fields); None != to_model drops them,
+    # which is the intended behaviour.
+    m2ms = [x for x in m2ms if remote_field_model(x) == to_model]
 
     # if 'm2m_name' was given, filter out all M2Ms not matching that name, leaving
     # only one (or none)
