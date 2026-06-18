@@ -92,7 +92,7 @@ class Trigger(base.Trigger):
                     actions_added.add((sql, action_params))
                     action_list.extend(sql.split("\n"))
                     params.extend(action_params)
-        table = self.db_table
+        table = qn(self.db_table)
         time = self.time.upper()
         event = self.event.upper()
         content_type = self.content_type

@@ -116,13 +116,23 @@ def test_middleware_does_not_silently_swallow_database_errors(
 
     Fix: retry on 40P01/40001; surface other DatabaseErrors.
     """
+    from django.contrib.contenttypes.models import ContentType
     from django.http import HttpRequest, HttpResponse
+
+    from test_app.models import Member
 
     import denorm.middleware as mw_module
     from denorm.middleware import DenormMiddleware
+    from denorm.models import DirtyInstance
 
     request = HttpRequest()
     response = HttpResponse(b"ok")
+
+    # The middleware only flushes when there are dirty markers (cheap exists()
+    # guard), so a marker must exist for flush() to be reached at all.
+    DirtyInstance.objects.create(
+        content_type=ContentType.objects.get_for_model(Member), object_id=1
+    )
 
     # The middleware module imports `flush` directly at module load time
     # (`from denorm import flush`), so we must patch the imported name in

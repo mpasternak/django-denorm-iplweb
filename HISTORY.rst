@@ -1,6 +1,43 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+* fix: ``Trigger.sql()`` now quotes the table name in the generated
+  ``CREATE TRIGGER ... ON <table>`` / ``DROP TRIGGER ... ON <table>`` DDL.
+  It was the one identifier in the trigger generator still interpolated raw
+  (every ``TriggerAction*`` body already quoted its table), so a model with a
+  reserved-word or mixed-case ``db_table`` produced broken trigger DDL at
+  ``denorm_init`` / ``denorm_rebuild_triggers`` time.
+* fix: the M2M ``CacheKeyField`` trigger now quotes the primary-key column in
+  its ``<pk> IN (SELECT ...)`` ``WHERE`` clause. A model whose PK column needs
+  quoting (reserved word / mixed case) produced broken SQL.
+* fix: ``rebuildall(verbose=True)`` no longer truncates the post-rebuild flush.
+  ``verbose`` (a logging flag) was passed positionally to ``flush()``, whose
+  first parameter is ``run_once`` — so ``verbose=True`` stopped the flush after
+  a single pass and left dependency-cascade markers unprocessed.
+* fix: ``denorm_flush_via_queue`` no longer crashes with
+  ``TypeError: object of type 'EagerResult' has no len()``. It treated the
+  return value of ``flush_via_queue`` (the chord callback's ``AsyncResult``) as
+  a ``GroupResult``. The command now dispatches the task fire-and-forget and
+  polls the ``DirtyInstance`` table until it drains, bounded by a new
+  ``--timeout`` (and ``--poll-interval``). Multi-pass chord convergence means
+  there is no single group to await.
+* fix: ``denorm_queue`` daemon robustness — the reconnect backoff now **resets**
+  to its base after a successful (re)connection (a flapping DB no longer
+  accumulates an ever-growing wait); ``select()`` uses a finite keepalive
+  timeout (so a silently dead connection is surfaced and shutdown is prompt)
+  and a signal-interrupted ``select`` (``InterruptedError``) no longer crashes
+  the daemon; the ``LISTEN`` cursor is closed promptly instead of leaking one
+  per reconnect.
+* feature: ``DenormMiddleware`` is now configurable via the
+  ``DENORM_MIDDLEWARE_FLUSH`` setting (``"inline"`` (default) / ``"queue"`` /
+  ``"off"``) and only flushes when ``DirtyInstance`` markers actually exist
+  (a cheap ``exists()`` guard, correct for bulk/raw writes too). In ``"queue"``
+  mode it dispatches ``flush_via_queue`` instead of blocking the request; in
+  ``"off"`` mode it does nothing, deferring to the ``denorm_queue`` daemon.
+
 1.12.1 (2026-06-13)
 -------------------
 

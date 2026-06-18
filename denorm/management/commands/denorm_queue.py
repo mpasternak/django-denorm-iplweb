@@ -31,6 +31,20 @@ class Command(BaseCommand):
         "pooler reconnect) by re-establishing the LISTEN with exponential backoff."
     )
 
+    # Base/cap for the reconnect backoff; reset to the base on every successful
+    # (re)connection so a flapping DB never accumulates an ever-growing wait.
+    base_backoff = 1.0
+    max_backoff = 30.0
+
+    # Finite select() timeout (seconds). A blocking (None) wait could never
+    # notice a silently dead connection between NOTIFYs, nor wake to shut down;
+    # a periodic keepalive poll surfaces a dead connection so handle() reconnects.
+    select_timeout = 30.0
+
+    # Live reconnect backoff, re-read by handle() after each loop so a reset
+    # performed by _listen_loop on connect takes effect.
+    _backoff = base_backoff
+
     def add_arguments(self, parser):
         parser.add_argument(
             "--run-once",
@@ -39,8 +53,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, run_once=False, **options):
-        backoff = 1.0
-        max_backoff = 30.0
+        self._backoff = self.base_backoff
         while True:
             try:
                 self._listen_loop(run_once=run_once)
@@ -52,7 +65,7 @@ class Command(BaseCommand):
                     "reconnecting in %.1fs",
                     type(e).__name__,
                     e,
-                    backoff,
+                    self._backoff,
                 )
                 # Drop Django's cached connection so the next .cursor() call
                 # establishes a fresh psycopg2 connection.
@@ -60,8 +73,8 @@ class Command(BaseCommand):
                     connections["default"].close()
                 except Exception:
                     logger.exception("denorm_queue: error closing stale connection")
-                time.sleep(backoff)
-                backoff = min(max_backoff, backoff * 2)
+                time.sleep(self._backoff)
+                self._backoff = min(self.max_backoff, self._backoff * 2)
                 if run_once:
                     return
                 continue
@@ -71,10 +84,17 @@ class Command(BaseCommand):
 
     def _listen_loop(self, run_once=False):
         """Inner loop. Raises on connection loss; caller reconnects."""
-        crs = connection.cursor()
-        pg_con = connection.connection
-        pg_con.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-        crs.execute(f"LISTEN {const.DENORM_QUEUE_NAME}")
+        # The cursor is only needed to issue LISTEN; close it promptly (a
+        # long-lived daemon must not leak one cursor per reconnect). LISTEN is
+        # registered on the connection itself and outlives the cursor.
+        with connection.cursor() as crs:
+            pg_con = connection.connection
+            pg_con.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+            crs.execute(f"LISTEN {const.DENORM_QUEUE_NAME}")
+
+        # We connected: clear any accumulated reconnect backoff so the next drop
+        # starts waiting from the base again.
+        self._backoff = self.base_backoff
 
         logger.info("denorm_queue: listening on channel '%s'", const.DENORM_QUEUE_NAME)
 
@@ -90,16 +110,24 @@ class Command(BaseCommand):
                 return
             ran_once = True
 
-            ready = select.select([pg_con], [], [], None)
-            if ready == ([], [], []):
-                logger.warning("denorm_queue: select() timeout")
+            try:
+                ready = select.select([pg_con], [], [], self.select_timeout)
+            except InterruptedError:
+                # A signal (e.g. SIGTERM during graceful shutdown) interrupted
+                # the wait. Loop again; KeyboardInterrupt still propagates to
+                # handle() for a clean exit.
                 continue
-            # Will raise on a dead connection — propagate so handle()
-            # can reconnect with backoff.
+            # poll() raises on a dead connection — propagate so handle() can
+            # reconnect with backoff. On a keepalive timeout we still poll, so a
+            # connection that died silently between NOTIFYs is surfaced.
             pg_con.poll()
             # Spec 1.1: poll() appends every NOTIFY to pg_con.notifies and
             # never removes them — drain, or this daemon leaks memory under
             # sustained write traffic. The payload is empty; arrival is the
             # only signal.
+            had_notifications = bool(pg_con.notifies)
             del pg_con.notifies[:]
+            if ready == ([], [], []) and not had_notifications:
+                # Pure keepalive wakeup, no work to do.
+                continue
             flush_via_queue.delay()

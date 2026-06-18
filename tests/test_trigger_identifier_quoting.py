@@ -15,9 +15,11 @@ database.
 
 from __future__ import annotations
 
+import pytest
 from django.db import connection
 
 from denorm.db.triggers import (
+    Trigger,
     TriggerActionInsert,
     TriggerActionUpdate,
     TriggerNestedSelect,
@@ -90,3 +92,34 @@ def test_quoting_is_idempotent_for_prequoted_identifiers():
 
     assert '""' not in sql  # no doubled quotes anywhere
     assert qn("object_id") in sql
+
+
+def test_trigger_ddl_quotes_table_name():
+    # Review #1: Trigger.sql() interpolated self.db_table raw into the
+    # CREATE TRIGGER ... ON %(table)s and DROP TRIGGER ... ON %(table)s DDL,
+    # while the TriggerAction* bodies already quoted their tables. A model with
+    # a reserved-word or mixed-case db_table produced broken trigger DDL at
+    # denorm_init / denorm_rebuild_triggers time.
+    trig = Trigger(DirtyInstance, "after", "update", [], content_type=1)
+    trig.db_table = "weird table"
+    sql, _ = trig.sql()
+
+    assert f"ON {qn('weird table')}" in sql  # CREATE/DROP TRIGGER ... ON "weird table"
+    assert "ON weird table" not in sql  # never the raw, unquoted form
+
+
+@pytest.mark.django_db
+def test_cachekey_m2m_trigger_quotes_pk_in_where():
+    # Review #4: the M2M CacheKey trigger built its UPDATE WHERE as
+    # ``<pk_col> IN (SELECT ...)`` with the PK column spliced in raw, while the
+    # neighbouring identifiers all went through qn(). A model whose PK column
+    # needs quoting produced broken SQL. ``" IN ("`` is generated only by this
+    # cachekey path, so a quoted PK proves the fix.
+    from test_app.models import Member
+
+    from denorm.denorms import build_triggerset
+
+    all_sql = "\n".join(t.sql()[0] for t in build_triggerset().triggers.values())
+
+    member_pk = qn(Member._meta.pk.get_attname_column()[1])
+    assert f"{member_pk} IN (" in all_sql

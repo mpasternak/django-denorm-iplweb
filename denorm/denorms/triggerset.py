@@ -67,7 +67,10 @@ def rebuildall(model_name=None, field_name=None, verbose=False, flush_=True):
     if flush_:
         from denorm.denorms import flush
 
-        flush(verbose)
+        # ``verbose`` is a logging flag only. It must NOT be passed positionally
+        # to flush(), whose first parameter is ``run_once`` — doing so truncated
+        # the flush to a single pass and left dependency-cascade markers behind.
+        flush()
 
 
 def drop_triggers(using=None):
