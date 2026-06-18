@@ -5,9 +5,13 @@ from denorm.helpers import find_fks, find_m2ms
 
 
 def _qv(value):
-    # As long as `value` is function.__name__ (a Python identifier) this is
-    # safe to inline into trigger SQL. Anything else would be SQL injection.
-    return f"'{value}'"
+    # Inline `value` into trigger SQL as a quoted string literal. Callers pass
+    # function.__name__ (a Python identifier), but we still escape embedded
+    # quotes — exactly like helpers.content_type_select_sql._quote — so the
+    # "no injection" property is enforced here rather than assumed of every
+    # caller. The trigger body itself is not parameterized, so this is the only
+    # guard for the value side.
+    return "'%s'" % str(value).replace("'", "''")
 
 
 class DenormDependency(object):

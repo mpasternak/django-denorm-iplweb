@@ -111,7 +111,9 @@ class Command(BaseCommand):
             ran_once = True
 
             try:
-                ready = select.select([pg_con], [], [], self.select_timeout)
+                # Return value is ignored: we redispatch on both readiness and
+                # keepalive timeout (see below); select() is only the wait.
+                select.select([pg_con], [], [], self.select_timeout)
             except InterruptedError:
                 # A signal (e.g. SIGTERM during graceful shutdown) interrupted
                 # the wait. Loop again; KeyboardInterrupt still propagates to
@@ -125,9 +127,14 @@ class Command(BaseCommand):
             # never removes them — drain, or this daemon leaks memory under
             # sustained write traffic. The payload is empty; arrival is the
             # only signal.
-            had_notifications = bool(pg_con.notifies)
             del pg_con.notifies[:]
-            if ready == ([], [], []) and not had_notifications:
-                # Pure keepalive wakeup, no work to do.
-                continue
+            # Dispatch on BOTH a NOTIFY and a pure keepalive timeout. The
+            # keepalive dispatch is a bounded lost-wakeup backstop: a marker can
+            # be committed while a flush_via_queue is mid-run and have its NOTIFY
+            # deduped by the Singleton lock — or land in an empty-snapshot run
+            # that schedules no chord — leaving the marker with no pending task
+            # and no future NOTIFY (Postgres does not re-deliver it). Without a
+            # periodic redispatch it would sit until the next unrelated write.
+            # flush_via_queue is a Singleton whose empty-snapshot path returns
+            # immediately, so an idle redispatch every select_timeout is cheap.
             flush_via_queue.delay()

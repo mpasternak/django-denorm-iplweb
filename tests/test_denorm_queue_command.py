@@ -110,3 +110,29 @@ def test_listen_loop_survives_interrupted_select(monkeypatch):
     cmd = mod.Command()
     # Must not propagate InterruptedError.
     cmd._listen_loop(run_once=True)
+
+
+def test_keepalive_redispatches_flush_as_lost_wakeup_backstop(monkeypatch):
+    # Review batch 3, finding #1: a marker can be committed while a
+    # flush_via_queue is mid-run and have its NOTIFY deduped by the Singleton
+    # lock (or land in an empty-snapshot run that schedules no chord), leaving
+    # the marker with no pending task and no future NOTIFY. The daemon must
+    # therefore (re)dispatch a flush on a pure keepalive timeout too, as a
+    # bounded safety backstop — not only when a NOTIFY arrives.
+    conn_wrapper, pg_con = _wire_fake_connection(monkeypatch)
+    pg_con.notifies = []  # no notifications: a pure keepalive wakeup
+
+    calls = []
+    monkeypatch.setattr(mod.flush_via_queue, "delay", lambda: calls.append(1))
+
+    def fake_select(r, w, x, timeout):
+        return ([], [], [])  # select timed out -> keepalive
+
+    monkeypatch.setattr(mod.select, "select", fake_select)
+
+    cmd = mod.Command()
+    cmd._listen_loop(run_once=True)
+
+    # One on-(re)connect kick (existing behaviour) PLUS one keepalive backstop.
+    # The buggy version `continue`d on keepalive and dispatched only the kick.
+    assert calls == [1, 1]
