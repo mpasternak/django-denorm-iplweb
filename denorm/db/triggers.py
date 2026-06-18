@@ -1,7 +1,18 @@
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.backends.utils import truncate_name
 
 from denorm.db import base
+
+# quote_name is idempotent on PostgreSQL (it returns an already-quoted name
+# unchanged), so wrapping identifiers here is safe even when a caller passed one
+# pre-quoted. Every identifier we splice into generated trigger SQL — db_table,
+# WHERE-clause column keys, INSERT/UPDATE target columns — must go through it,
+# or a model with a custom db_table or a reserved-word field name (``order``,
+# ``user`` ...) produces broken or silently no-op trigger SQL (audit #2).
+# NOTE: this quotes IDENTIFIER positions only. The SELECT list of
+# TriggerNestedSelect holds arbitrary SQL expressions (subqueries, quoted
+# literals, qn()-wrapped column refs supplied by the caller) and is left as-is.
+_qn = connection.ops.quote_name
 
 
 class RandomBigInt(base.RandomBigInt):
@@ -12,8 +23,8 @@ class RandomBigInt(base.RandomBigInt):
 class TriggerNestedSelect(base.TriggerNestedSelect):
     def sql(self):
         columns = self.columns
-        table = self.table
-        where = ", ".join(["%s = %s" % (k, v) for k, v in self.kwargs.items()])
+        table = _qn(self.table)
+        where = ", ".join(["%s = %s" % (_qn(k), v) for k, v in self.kwargs.items()])
         return (
             "SELECT DISTINCT %(columns)s FROM %(table)s WHERE %(where)s" % locals(),
             tuple(),
@@ -22,8 +33,8 @@ class TriggerNestedSelect(base.TriggerNestedSelect):
 
 class TriggerActionInsert(base.TriggerActionInsert):
     def sql(self):
-        table = self.model._meta.db_table
-        columns = "(" + ", ".join(self.columns) + ")"
+        table = _qn(self.model._meta.db_table)
+        columns = "(" + ", ".join(_qn(c) for c in self.columns) + ")"
         params = []
         if isinstance(self.values, TriggerNestedSelect):
             sql, nested_params = self.values.sql()
@@ -42,10 +53,10 @@ class TriggerActionInsert(base.TriggerActionInsert):
 
 class TriggerActionUpdate(base.TriggerActionUpdate):
     def sql(self):
-        table = self.model._meta.db_table
+        table = _qn(self.model._meta.db_table)
         params = []
         updates = ", ".join(
-            ["%s = %s" % (k, v) for k, v in zip(self.columns, self.values)]
+            ["%s = %s" % (_qn(k), v) for k, v in zip(self.columns, self.values)]
         )
         if isinstance(self.where, tuple):
             where, where_params = self.where
