@@ -4,6 +4,13 @@ from django.db import connection, models
 from . import denorms
 
 
+# Sentinel for the per-save pre_save() cache: ``None`` (and other falsy values)
+# are legitimate denorm results, so "absent" must be a value the function can
+# never return. getattr(..., _UNSET) distinguishes "not computed yet" from
+# "computed and the answer is None".
+_UNSET = object()
+
+
 _SAFE_SELF_FUNCS_CACHE = {}
 
 
@@ -183,8 +190,8 @@ def denormalized(DBField, *args, **kwargs):
             """
             # Cache key unique to this field on this instance for this save cycle.
             cache_attr = f"_denorm_pre_save_{self.attname}"
-            cached = getattr(model_instance, cache_attr, None)
-            if cached is not None:
+            cached = getattr(model_instance, cache_attr, _UNSET)
+            if cached is not _UNSET:
                 return cached
 
             value = self.denorm.func(model_instance)
@@ -213,11 +220,17 @@ def denormalized(DBField, *args, **kwargs):
             return result
 
         def deconstruct(self):
+            # Freeze a denormalized field in migrations as its plain DBField:
+            # the dynamic DenormDBField subclass has no importable path, so we
+            # return the base field's path AND the base field's normalized
+            # args/kwargs. Returning super_path together with the subclass's own
+            # args/kwargs (the previous behaviour) mixed two sources and could
+            # leak denorm-only kwargs into migrations / raise on reconstruction.
             name, path, args, kwargs = super().deconstruct()
             super_name, super_path, super_args, super_kwargs = DBField(
                 *args, **kwargs
             ).deconstruct()
-            return name, super_path, args, kwargs
+            return name, super_path, super_args, super_kwargs
 
     def deco(func):
         dbfield = DenormDBField(func, *args, **kwargs)
@@ -395,8 +408,8 @@ class CacheKeyField(models.BigIntegerField):
         # Must be idempotent: Django 6.0+ may call pre_save() multiple times.
         # See: https://code.djangoproject.com/ticket/36855
         cache_attr = f"_denorm_pre_save_{self.attname}"
-        cached = getattr(model_instance, cache_attr, None)
-        if cached is not None:
+        cached = getattr(model_instance, cache_attr, _UNSET)
+        if cached is not _UNSET:
             return cached
 
         value = self.denorm.func(model_instance)
