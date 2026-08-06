@@ -4,6 +4,17 @@ Changelog
 Unreleased
 ----------
 
+* Added support for Django 6.1. CI now tests Django 5.2, 6.0 and 6.1;
+  Django 6.1 (like 6.0) requires Python 3.12+.
+* fix: Django 6.1 compatibility — filtered aggregates
+  (``CountField``/``SumField`` with ``filter=``/``exclude=``) generated broken
+  trigger DDL. Django 6.1 changed ``Col.as_sql()`` to use
+  ``SQLCompiler.quote_name()`` instead of the now-deprecated
+  ``quote_name_unless_alias()``, so the fake ``NEW`` / ``OLD`` alias used to
+  compile the filter came out as ``"NEW"."col"`` — a table reference, which
+  PostgreSQL rejects with ``missing FROM-clause entry for table "NEW"``. The
+  new ``TriggerSQLCompiler`` keeps those two PL/pgSQL record variables
+  unquoted on every supported Django version.
 * fix: ``Trigger.sql()`` now quotes the table name in the generated
   ``CREATE TRIGGER ... ON <table>`` / ``DROP TRIGGER ... ON <table>`` DDL.
   It was the one identifier in the trigger generator still interpolated raw

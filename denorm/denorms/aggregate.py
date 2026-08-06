@@ -20,6 +20,36 @@ except ImportError:
 
 from .base import Denorm
 
+#: PL/pgSQL record variables available inside a row trigger. They look like
+#: table aliases to Django's SQL compiler, but they are *not* identifiers that
+#: may be quoted -- ``"NEW"."col"`` is read by PostgreSQL as a reference to a
+#: table named ``NEW`` and fails with "missing FROM-clause entry for table NEW".
+TRIGGER_ALIASES = frozenset(("NEW", "OLD"))
+
+
+class TriggerSQLCompiler(SQLCompiler):
+    """Compiler that never quotes the ``NEW`` / ``OLD`` trigger aliases.
+
+    Up to Django 6.0 ``Col.as_sql()`` used ``quote_name_unless_alias()``, which
+    left anything registered in ``Query.alias_map`` unquoted -- so the fake
+    ``NEW`` / ``OLD`` alias of :class:`TriggerFilterQuery` came out bare by
+    accident. Django 6.1 switched ``Col.as_sql()`` to ``quote_name()`` (and
+    deprecated ``quote_name_unless_alias()``), which quotes every alias. This
+    subclass restores the required behaviour for the two record variables only.
+    """
+
+    def quote_name(self, name):
+        if name in TRIGGER_ALIASES:
+            return name
+        if hasattr(SQLCompiler, "quote_name"):  # Django >= 6.1
+            return super().quote_name(name)
+        return self.connection.ops.quote_name(name)
+
+    def quote_name_unless_alias(self, name):  # Django < 6.1 code paths
+        if name in TRIGGER_ALIASES:
+            return name
+        return super().quote_name_unless_alias(name)
+
 
 class TriggerWhereNode(WhereNode):
     def sql_for_columns(self, data, qn, connection, internal_type=None):
@@ -208,7 +238,7 @@ class AggregateDenorm(Denorm):
         inc_query = TriggerFilterQuery(related_model, trigger_alias="NEW")
         inc_query.add_q(Q(**self.filter))
         inc_query.add_q(~Q(**self.exclude))
-        qn = SQLCompiler(inc_query, cconnection, using)
+        qn = TriggerSQLCompiler(inc_query, cconnection, using)
         try:
             inc_filter_where, _ = inc_query.where.as_sql(qn, cconnection)
         except FullResultSet:
@@ -217,7 +247,7 @@ class AggregateDenorm(Denorm):
         dec_query = TriggerFilterQuery(related_model, trigger_alias="OLD")
         dec_query.add_q(Q(**self.filter))
         dec_query.add_q(~Q(**self.exclude))
-        qn = SQLCompiler(dec_query, cconnection, using)
+        qn = TriggerSQLCompiler(dec_query, cconnection, using)
         try:
             dec_filter_where, where_params = dec_query.where.as_sql(qn, cconnection)
         except FullResultSet:
