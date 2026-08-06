@@ -1,6 +1,23 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+* ``CountField`` / ``SumField`` declared over a ``ManyToManyField`` now
+  work. ``AggregateDenorm.m2m_triggers()`` — the through-table triggers, the
+  only ones that see a row being added to or removed from an m2m relation —
+  was reached exclusively from that configuration, and it had been dead since
+  Django 1.8: ``get_related_where()`` called ``manager.related`` (gone),
+  ``Query.add_count_column()`` (removed in 1.8) and
+  ``clear_ordering(force_empty=True)`` (renamed in 4.0), so building the
+  triggers raised ``AttributeError`` at ``denorm_init`` /
+  ``install_triggers()`` time. The subquery is now built with the current
+  ``Query`` API (``add_annotation(Count("*"), ...)``, ``clear_ordering(force=True)``).
+  ``SumDenorm``'s related increment/decrement additionally selected
+  ``self.fieldname`` — the denormalized column, which lives on the *other*
+  model — instead of the summed column ``self.sum_field``.
+
 1.13.0 (2026-08-07)
 -------------------
 

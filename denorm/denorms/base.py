@@ -65,12 +65,13 @@ class Denorm:
         self.skip = skip
         self.only = only
 
-    def get_quote_name(self, using):
+    def get_connection(self, using):
         if using:
-            cconnection = connections[using]
-        else:
-            cconnection = connection
-        return cconnection.ops.quote_name
+            return connections[using]
+        return connection
+
+    def get_quote_name(self, using):
+        return self.get_connection(using).ops.quote_name
 
     def setup(self, **kwargs):
         """

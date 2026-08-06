@@ -401,3 +401,29 @@ class AlwaysDirtyModel(models.Model):
     @depend_on_fields("first_name")
     def greeting(self):
         return f"Hi {self.first_name}"
+
+
+class M2MAggregateTarget(models.Model):
+    """Aggregates declared over a *ManyToMany* manager.
+
+    Reverse-FK aggregates (``Forum.post_count``) exercise the plain branch of
+    ``AggregateDenorm.get_triggers``.  These two fields hang off the reverse
+    side of ``M2MAggregateTagger.targets`` instead, which is the only way to
+    reach ``AggregateDenorm.m2m_triggers`` / ``get_related_where`` — the
+    through-table triggers that keep the aggregate correct when rows are
+    added to or removed from the m2m relation itself.
+    """
+
+    name = models.CharField(max_length=50, default="")
+
+    tagger_count = CountField("taggers")
+    tagger_weight_sum = SumField("taggers", field="weight")
+
+
+class M2MAggregateTagger(models.Model):
+    name = models.CharField(max_length=50, default="")
+    weight = models.PositiveIntegerField(default=1)
+
+    targets = models.ManyToManyField(
+        M2MAggregateTarget, blank=True, related_name="taggers"
+    )
