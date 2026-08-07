@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-denorm-iplweb"
-version = "1.12.2"
+version = "1.13.0"
 description = "Denormalization magic for Django"
 readme = "README.rst"
 requires-python = ">=3.10"
@@ -69,7 +69,7 @@ postgres_password = "postgres"
 postgres_database = "denorm_test"
 
 [tool.bumpver]
-current_version = "1.12.2"
+current_version = "1.13.0"
 version_pattern = "MAJOR.MINOR.PATCH[PYTAGNUM]"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true

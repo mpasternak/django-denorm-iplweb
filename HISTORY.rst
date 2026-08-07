@@ -1,8 +1,8 @@
 Changelog
 =========
 
-Unreleased
-----------
+1.13.0 (2026-08-07)
+-------------------
 
 * Added support for Django 6.1. CI now tests Django 5.2, 6.0 and 6.1;
   Django 6.1 (like 6.0) requires Python 3.12+.
