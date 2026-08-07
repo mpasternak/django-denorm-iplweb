@@ -1,9 +1,10 @@
 import abc
+import functools
 
 from django.contrib import contenttypes
 from django.db import connection, connections
 from django.db.models import ManyToManyField, sql
-from django.db.models.aggregates import Sum
+from django.db.models.aggregates import Count, Sum
 from django.db.models.query_utils import Q
 from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql.datastructures import Join
@@ -27,15 +28,15 @@ from .base import Denorm
 TRIGGER_ALIASES = frozenset(("NEW", "OLD"))
 
 
-class TriggerSQLCompiler(SQLCompiler):
-    """Compiler that never quotes the ``NEW`` / ``OLD`` trigger aliases.
+class TriggerAliasQuotingMixin:
+    """Never quote the ``NEW`` / ``OLD`` trigger aliases.
 
     Up to Django 6.0 ``Col.as_sql()`` used ``quote_name_unless_alias()``, which
     left anything registered in ``Query.alias_map`` unquoted -- so the fake
     ``NEW`` / ``OLD`` alias of :class:`TriggerFilterQuery` came out bare by
     accident. Django 6.1 switched ``Col.as_sql()`` to ``quote_name()`` (and
     deprecated ``quote_name_unless_alias()``), which quotes every alias. This
-    subclass restores the required behaviour for the two record variables only.
+    mixin restores the required behaviour for the two record variables only.
     """
 
     def quote_name(self, name):
@@ -49,6 +50,27 @@ class TriggerSQLCompiler(SQLCompiler):
         if name in TRIGGER_ALIASES:
             return name
         return super().quote_name_unless_alias(name)
+
+
+class TriggerSQLCompiler(TriggerAliasQuotingMixin, SQLCompiler):
+    """The generic compiler used to compile a filter against ``NEW`` / ``OLD``.
+
+    :class:`TriggerFilterQuery` fakes its single alias, so there is no real
+    table to compile against and the backend's own compiler subclass is
+    irrelevant here -- the generic one is what this has always used.
+    """
+
+
+@functools.lru_cache(maxsize=None)
+def trigger_compiler_class(base):
+    """``base`` with the ``NEW`` / ``OLD`` quoting exemption mixed in.
+
+    Used for SQL that a *real* query compiles but that gets spliced into a
+    trigger body, where the backend's own compiler subclass must be preserved
+    -- so the class is derived from whichever compiler
+    ``connection.ops.compiler()`` hands out rather than hardcoded.
+    """
+    return type(f"Trigger{base.__name__}", (TriggerAliasQuotingMixin, base), {})
 
 
 class TriggerWhereNode(WhereNode):
@@ -111,6 +133,74 @@ class AggregateDenorm(Denorm):
         if not self.manager and hasattr(self.model, str(self.manager_name)):
             self.manager = getattr(self.model, self.manager_name)
 
+    @property
+    def m2m_field(self):
+        """The ``ManyToManyField`` behind ``self.manager``.
+
+        ``manager.field`` is the m2m field itself no matter which side the
+        descriptor sits on, so ``m2m_field.model`` is always the model that
+        declares the relation — the model whose rows are being aggregated.
+        (Pre-1.8 Django exposed the same pair as ``manager.related.field`` /
+        ``manager.related.model``; that attribute is long gone.)
+        """
+        return self.manager.field
+
+    def get_related_subquery(self, using, type, select_field=None, filtered=False):
+        """Build the ``(SELECT ... FROM <related table> WHERE ...)`` subquery
+        addressing the single related row referenced by the through-table row
+        the trigger fired for (``NEW``/``OLD``, per ``type``).
+
+        With ``select_field`` it selects that column; without it, ``COUNT(*)``.
+
+        ``filtered`` applies ``self.filter``/``self.exclude``.  It is off by
+        default because only the caller that also propagates the returned
+        query parameters may use it — a filter contributes placeholders to
+        the SQL, and a caller that drops the params would emit broken SQL.
+        """
+        qn = self.get_quote_name(using)
+
+        related_query = Query(self.m2m_field.model)
+        if filtered:
+            for name, value in self.filter.items():
+                related_query.add_q(Q(**{name: value}))
+            for name, value in self.exclude.items():
+                related_query.add_q(~Q(**{name: value}))
+        related_query.add_extra(
+            None,
+            None,
+            [
+                "%s = %s.%s"
+                % (
+                    qn(self.m2m_field.model._meta.pk.get_attname_column()[1]),
+                    type,
+                    qn(self.m2m_field.m2m_column_name()),
+                )
+            ],
+            None,
+            None,
+            None,
+        )
+        if select_field is None:
+            related_query.add_annotation(Count("*"), "__count")
+        else:
+            related_query.add_fields([select_field])
+        related_query.clear_ordering(force=True)
+        related_query.default_cols = False
+        # This SELECT is spliced into a trigger body, so it is compiled with
+        # the NEW/OLD quoting exemption -- see trigger_compiler_class(). The
+        # exemption is what keeps the alias safe if a filter ever compiles a
+        # Col against it; today's ``NEW.<col>`` comes in through add_extra()
+        # as raw SQL, which no compiler touches.
+        #
+        # ``using`` is None whenever triggers are built for the default
+        # connection, so resolve the connection here rather than relying on
+        # Query.get_compiler(), which insists on one or the other.
+        cconnection = self.get_connection(using)
+        compiler_class = trigger_compiler_class(
+            cconnection.ops.compiler(related_query.compiler)
+        )
+        return compiler_class(related_query, cconnection, using).as_sql()
+
     def get_related_where(self, fk_name, using, type):
         qn = self.get_quote_name(using)
 
@@ -118,32 +208,9 @@ class AggregateDenorm(Denorm):
             "%s = %s.%s"
             % (qn(self.model._meta.pk.get_attname_column()[1]), type, qn(fk_name))
         ]
-        related_query = Query(self.manager.related.model)
-        for name, value in self.filter.items():
-            related_query.add_q(Q(**{name: value}))
-        for name, value in self.exclude.items():
-            related_query.add_q(~Q(**{name: value}))
-        related_query.add_extra(
-            None,
-            None,
-            [
-                "%s = %s.%s"
-                % (
-                    qn(self.model._meta.pk.get_attname_column()[1]),
-                    type,
-                    qn(self.manager.related.field.m2m_column_name()),
-                )
-            ],
-            None,
-            None,
-            None,
+        related_filter_where, related_where_params = self.get_related_subquery(
+            using, type, filtered=True
         )
-        related_query.add_count_column()
-        related_query.clear_ordering(force_empty=True)
-        related_query.default_cols = False
-        related_filter_where, related_where_params = related_query.get_compiler(
-            using=using
-        ).as_sql()
         if related_filter_where is not None:
             related_where.append("(" + related_filter_where + ") > 0")
         return related_where, related_where_params
@@ -349,59 +416,31 @@ class SumDenorm(AggregateDenorm):
 
         return f"{qn(self.fieldname)} - OLD.{qn(self.sum_field)}"
 
-    def get_related_increment_value(self, using):
+    def get_related_value(self, using, type, operator):
+        """``<denorm column> +/- (SELECT <summed column> FROM ...)``.
+
+        The subquery reads the summed column off the related row named by the
+        through-table row the trigger fired for.  It selects ``self.sum_field``
+        (a column of the *related* model) — never ``self.fieldname``, which
+        names the denormalized column on ``self.model`` and does not exist
+        over there.
+
+        No filter is applied here: the enclosing UPDATE is already gated by
+        ``get_related_where()``, so it only runs for rows that pass, and an
+        unparameterized value expression cannot carry filter placeholders.
+        """
         qn = self.get_quote_name(using)
 
-        related_query = Query(self.manager.related.model)
-        related_query.add_extra(
-            None,
-            None,
-            [
-                "%s = %s.%s"
-                % (
-                    qn(self.model._meta.pk.get_attname_column()[1]),
-                    "NEW",
-                    qn(self.manager.related.field.m2m_column_name()),
-                )
-            ],
-            None,
-            None,
-            None,
+        related_select, _ = self.get_related_subquery(
+            using, type, select_field=self.sum_field
         )
-        related_query.add_fields([self.fieldname])
-        related_query.clear_ordering(force_empty=True)
-        related_query.default_cols = False
-        related_filter_where, related_where_params = related_query.get_compiler(
-            using=using
-        ).as_sql()
-        return f"{qn(self.fieldname)} + ({related_filter_where})"
+        return f"{qn(self.fieldname)} {operator} ({related_select})"
+
+    def get_related_increment_value(self, using):
+        return self.get_related_value(using, "NEW", "+")
 
     def get_related_decrement_value(self, using):
-        qn = self.get_quote_name(using)
-
-        related_query = Query(self.manager.related.model)
-        related_query.add_extra(
-            None,
-            None,
-            [
-                "%s = %s.%s"
-                % (
-                    qn(self.model._meta.pk.get_attname_column()[1]),
-                    "OLD",
-                    qn(self.manager.related.field.m2m_column_name()),
-                )
-            ],
-            None,
-            None,
-            None,
-        )
-        related_query.add_fields([self.fieldname])
-        related_query.clear_ordering(force_empty=True)
-        related_query.default_cols = False
-        related_filter_where, related_where_params = related_query.get_compiler(
-            using=using
-        ).as_sql()
-        return f"{qn(self.fieldname)} - ({related_filter_where})"
+        return self.get_related_value(using, "OLD", "-")
 
 
 class CountDenorm(AggregateDenorm):
