@@ -1,8 +1,13 @@
 Changelog
 =========
 
-Unreleased
-----------
+1.14.0 (2026-08-07)
+-------------------
+
+This is a MINOR release rather than a patch: aggregates over a
+``ManyToManyField`` are documented but have never actually worked on any
+release of this package, so making them work adds a capability instead of
+merely correcting a regression.
 
 * ``CountField`` / ``SumField`` declared over a ``ManyToManyField`` now
   work. ``AggregateDenorm.m2m_triggers()`` — the through-table triggers, the
@@ -12,11 +17,18 @@ Unreleased
   ``Query.add_count_column()`` (removed in 1.8) and
   ``clear_ordering(force_empty=True)`` (renamed in 4.0), so building the
   triggers raised ``AttributeError`` at ``denorm_init`` /
-  ``install_triggers()`` time. The subquery is now built with the current
-  ``Query`` API (``add_annotation(Count("*"), ...)``, ``clear_ordering(force=True)``).
+  ``install_triggers()`` time — every attempt failed, on every supported
+  Django. The subquery is now built with the current ``Query`` API
+  (``add_annotation(Count("*"), ...)``, ``clear_ordering(force=True)``).
   ``SumDenorm``'s related increment/decrement additionally selected
   ``self.fieldname`` — the denormalized column, which lives on the *other*
   model — instead of the summed column ``self.sum_field``.
+* The m2m through-table subquery is now compiled with the ``NEW`` / ``OLD``
+  quoting exemption introduced in 1.13.0, so the revived code path cannot
+  reintroduce the Django 6.1 alias-quoting breakage. The exemption is now a
+  mixin (``TriggerAliasQuotingMixin``) applied on top of whichever compiler
+  class the backend hands out, rather than a hardcoded ``SQLCompiler``
+  subclass.
 
 1.13.0 (2026-08-07)
 -------------------
