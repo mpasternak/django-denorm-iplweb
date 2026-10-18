@@ -59,7 +59,13 @@ class _Frame:
 
 def _is_deferrable(field):
     """True for concrete ``@denormalized`` fields (computed in pre_save)."""
-    return getattr(field, "_denorm_deferrable", False) and field.concrete
+    return (
+        getattr(field, "_denorm_deferrable", False)
+        and field.concrete
+        # M2M denorms never reach pre_save; Django < 6.1 reports them as
+        # concrete, so exclude them explicitly.
+        and not field.many_to_many
+    )
 
 
 def _deferrable_fields_of(model):
