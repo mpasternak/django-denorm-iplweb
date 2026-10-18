@@ -1,8 +1,8 @@
 Changelog
 =========
 
-Unreleased
-----------
+1.15.0 (2026-10-18)
+-------------------
 
 * feature: ``denorm.deferred(*targets)`` -- an opt-in context manager (also
   usable as a decorator) that defers the computation of the named
