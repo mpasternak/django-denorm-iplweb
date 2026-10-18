@@ -1,8 +1,7 @@
 from django.conf import settings
 from django.db import connection, models
 
-from . import denorms
-
+from . import deferral, denorms
 
 # Sentinel for the per-save pre_save() cache: ``None`` (and other falsy values)
 # are legitimate denorm results, so "absent" must be a value the function can
@@ -140,6 +139,9 @@ def denormalized(DBField, *args, **kwargs):
         Special subclass of the given DBField type, with a few extra additions.
         """
 
+        # Marks fields that denorm.deferred() may target (computed in pre_save).
+        _denorm_deferrable = True
+
         def __init__(self, func=None, *args, **kwargs):
             self.func = func
             self.skip = kwargs.pop("skip", None)
@@ -188,6 +190,17 @@ def denormalized(DBField, *args, **kwargs):
             avoid re-evaluating the denorm function within the same save cycle.
             See: https://code.djangoproject.com/ticket/36855
             """
+            # Inside a denorm.deferred() block: skip the computation. The
+            # deferred value (F(column) on UPDATE, the default on INSERT) is
+            # already idempotent and depends on ``add``, so it bypasses the
+            # cache below -- Django's UPDATE-then-INSERT fallback calls
+            # pre_save(add=False) and then pre_save(add=True) in one save.
+            is_deferred, deferred_value = deferral.defer_pre_save(
+                self, model_instance, add
+            )
+            if is_deferred:
+                return deferred_value
+
             # Cache key unique to this field on this instance for this save cycle.
             cache_attr = f"_denorm_pre_save_{self.attname}"
             cached = getattr(model_instance, cache_attr, _UNSET)

@@ -1,6 +1,25 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+* feature: ``denorm.deferred(*targets)`` -- an opt-in context manager (also
+  usable as a decorator) that defers the computation of the named
+  ``@denormalized`` fields. Inside the block their ``pre_save()`` writes
+  ``column = column`` on UPDATE (``F(column)``) and the field default on
+  INSERT. When the outermost block exits, one per-function ``DirtyInstance``
+  marker per deferred ``(model, pk, field)`` is inserted in the current
+  transaction, so ``flush()`` / the queue computes the value once, on final
+  data. Typical use: wrap a Django admin change-form save, so a field derived
+  from inline rows is not computed on the parent's save (before the inlines
+  exist) and does not lock other tables ahead of the parent row (an ABBA
+  deadlock against ``flush_single``). Targets are explicit
+  (``"app.Model.field"``, ``"app.Model"``, a model class or a field). State
+  lives in a ``contextvars.ContextVar`` (thread- and asyncio-task-local),
+  blocks nest, and ``DENORM_ALWAYS_EAGER`` defers its eager flush to the
+  block's exit. Default behaviour outside a block is unchanged.
+
 1.14.0 (2026-08-07)
 -------------------
 
