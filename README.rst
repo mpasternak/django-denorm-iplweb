@@ -46,6 +46,25 @@ Patches welcome!
 .. _django-denorm: https://github.com/django-denorm/django-denorm
 .. _docs: https://django-denorm-iplweb.readthedocs.io/en/latest/history.html#id1
 
+Deferring computation
+=====================
+
+Fields declared with ``@denormalized`` are computed synchronously when their
+model is saved. To skip that for selected fields, e.g. while the Django admin
+saves a parent object before its inlines, wrap the writes in
+``denorm.deferred()``. The fields are then left untouched on UPDATE (or set
+to their default on INSERT) and marked dirty for ``flush()`` on block exit::
+
+    import denorm
+    from django.db import transaction
+
+    with transaction.atomic(), denorm.deferred("app.Article.summary"):
+        article.save()
+        for section in sections:
+            section.save()
+
+See the tutorial ("Deferring the computation") for details and limitations.
+
 Dirty instances view
 ====================
 

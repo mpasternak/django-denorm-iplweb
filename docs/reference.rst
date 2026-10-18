@@ -12,6 +12,13 @@ Decorators
 
 .. autofunction:: denorm.denorm_always_dirty
 
+Context managers
+================
+
+.. autofunction:: denorm.deferred
+
+See :ref:`deferred` in the tutorial for semantics and limitations.
+
 Fields
 ======
 

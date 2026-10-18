@@ -15,6 +15,7 @@ Test-only by design: the deferred model (DB triggers mark dirty, ``flush()``
 recomputes later) is unchanged in production. Default is OFF, in which case the
 handler is a strict no-op (one ``getattr`` per signal).
 """
+
 from __future__ import annotations
 
 import threading
@@ -37,6 +38,13 @@ def _eager_flush(sender, **kwargs):
     # everything to convergence, so the re-entrant calls must be no-ops.
     # This also guards DirtyInstance's own post_save during flush().
     if getattr(_state, "flushing", False):
+        return
+    # Inside denorm.deferred(): flushing now would compute the deferred
+    # fields on half-saved data -- exactly what the block is for. The
+    # outermost block runs one eager flush when it exits.
+    from denorm.deferral import deferral_active
+
+    if deferral_active():
         return
     _state.flushing = True
     try:

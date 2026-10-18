@@ -273,6 +273,88 @@ marker so that ``flush()`` recomputes all denormalized fields, even when no
 watched column changed.  See the :ref:`reference` for the full details and the
 ``QuerySet.update()`` / ``bulk_create()`` caveat.
 
+.. _deferred:
+
+Deferring the computation: ``denorm.deferred()``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default ``Field.pre_save()`` computes the saved object's own
+``@denormalized`` fields synchronously (step 1 above). Sometimes that is
+wasted or harmful work: the Django admin saves the parent object **before**
+its inlines, so a field computed from the inline rows is computed on stale
+data and immediately marked dirty again by the inline triggers. If the
+function reads other tables, it may also take locks on them *before* the
+parent row's ``UPDATE``, the opposite order to ``flush_single`` (which locks
+the parent first), which can deadlock.
+
+``denorm.deferred(*targets)`` is an opt-in context manager (and decorator)
+that skips this computation for the fields you name::
+
+    import denorm
+    from django.db import transaction
+
+    with transaction.atomic(), denorm.deferred("app.Article.summary"):
+        article.save()          # summary is NOT computed here
+        for section in sections:
+            section.save()
+    # on exit: a DirtyInstance marker for (Article, pk, "summary")
+
+Inside the block, for every targeted field:
+
+* **UPDATE** writes ``column = column`` (``pre_save`` returns
+  ``F(column)``), so the stored value is left as it was;
+* **INSERT** stores the field's default (``get_default()``). If the column is
+  ``NOT NULL`` and has no usable default the value is computed as usual, since
+  deferring would only make the ``INSERT`` fail;
+* each deferred ``(model, pk, field)`` is collected, and when the
+  **outermost** block exits, one per-function ``DirtyInstance`` marker per
+  pair is bulk-inserted (``ignore_conflicts``) in the **current** transaction.
+  ``flush()`` / the queue then computes the field once, on the final data. A
+  rollback removes the markers together with the rows. The ``NOTIFY`` that
+  wakes ``denorm_queue`` is sent on commit.
+
+Targets are required. Calling ``denorm.deferred()`` with no arguments is a
+``TypeError``, because deferring every denormalized field implicitly would
+also make unrelated, cheap fields stale. A target can be:
+
+* ``"app_label.Model.field_name"`` or a field instance: one field;
+* ``"app_label.Model"`` or a model class: every concrete ``@denormalized``
+  field of that model, including inherited ones. With abstract inheritance
+  only *this* model's copy is deferred, not sibling models'.
+
+``CountField`` / ``SumField`` (already trigger-maintained), ``CacheKeyField``
+and ``ManyToManyField``-based denorms cannot be deferred. Naming them is a
+``ValueError``.
+
+Details and limitations:
+
+* **Nesting**: blocks nest; inner blocks add targets, and only the outermost
+  exit writes the markers.
+* **Exceptions**: if the block raises, the markers are still written,
+  best-effort and in a savepoint, because the caller may catch the error and
+  commit what was saved. Nothing is written into a transaction that is
+  already marked for rollback. A failure to write is logged, never raised.
+* **Commit boundary**: put the block *inside* the transaction that performs
+  the saves (as above), so the markers commit atomically with the rows. If
+  the block encloses a function that opens *and commits* its own
+  ``atomic()``, the markers are written just after that commit.
+* **In-memory value is stale**: after ``save()`` inside the block, the
+  instance's attribute for a deferred field does not hold the new value; it
+  holds the default on INSERT, and the old or unrefreshed value on UPDATE.
+  Call ``refresh_from_db()`` after the flush.
+* ``flush()`` called **inside** the block computes normally. Its own
+  recompute ``save()`` is exactly the work being deferred.
+* :ref:`DENORM_ALWAYS_EAGER <testing>`: the eager flush is suppressed inside
+  the block, and one ``flush()`` runs after the outermost block exits
+  normally, so tests see settled values after the block.
+* **Isolation**: the state is a ``contextvars.ContextVar``, so it is per
+  thread and per asyncio task, and it follows ``sync_to_async`` calls (ASGI).
+* ``QuerySet.bulk_create()`` inside the block also stores the defaults
+  (it calls ``pre_save``); PostgreSQL returns the new pks, so the exit writes
+  markers for those rows as well. ``QuerySet.update()`` / ``bulk_update()``
+  never call ``pre_save`` and are unaffected.
+
+
 Post-request flushing
 ^^^^^^^^^^^^^^^^^^^^^
 
