@@ -1,0 +1,58 @@
+name: Publish to PyPI
+
+# Trusted publishing (OIDC): no API token is stored anywhere. PyPI must list
+# this repository, workflow file "publish.yml" and environment "pypi" as a
+# trusted publisher of django-denorm-iplweb.
+#
+# Normal flow: push a vX.Y.Z tag. To publish a tag that was pushed before
+# this workflow existed (or to retry), run it manually with that tag:
+#   gh workflow run publish.yml -f tag=v1.16.0
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, e.g. v1.16.0"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Check that the tag matches the package version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(uv run --no-project python -c \
+            "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match pyproject.toml version $version" >&2
+            exit 1
+          fi
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/django-denorm-iplweb
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
