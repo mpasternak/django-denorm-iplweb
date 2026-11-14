@@ -8,6 +8,7 @@ import psycopg2.extensions
 from django.core.management.base import BaseCommand
 from django.db import connection, connections
 
+from denorm.conf import settings as denorm_settings
 from denorm.db import const
 from denorm.tasks import flush_via_queue
 
@@ -45,6 +46,20 @@ class Command(BaseCommand):
     # performed by _listen_loop on connect takes effect.
     _backoff = base_backoff
 
+    # Outage tracking (time.monotonic() values). _outage_started is set on the
+    # first failed connection and cleared once LISTEN succeeds again;
+    # _last_outage_error rate-limits the ERROR (see _report_connection_loss).
+    _outage_started = None
+    _last_outage_error = None
+
+    # Set by request_stop() (from another thread) to end handle() at the next
+    # select() wakeup or reconnect attempt. Used by tests that run the daemon
+    # in a background thread and must not leave it running.
+    _stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
     def add_arguments(self, parser):
         parser.add_argument(
             "--run-once",
@@ -60,13 +75,7 @@ class Command(BaseCommand):
             except KeyboardInterrupt:
                 sys.exit()
             except _CONNECTION_ERRORS as e:
-                logger.warning(
-                    "denorm_queue: lost LISTEN connection (%s: %s); "
-                    "reconnecting in %.1fs",
-                    type(e).__name__,
-                    e,
-                    self._backoff,
-                )
+                self._report_connection_loss(e)
                 # Drop Django's cached connection so the next .cursor() call
                 # establishes a fresh psycopg2 connection.
                 try:
@@ -75,12 +84,49 @@ class Command(BaseCommand):
                     logger.exception("denorm_queue: error closing stale connection")
                 time.sleep(self._backoff)
                 self._backoff = min(self.max_backoff, self._backoff * 2)
-                if run_once:
+                if run_once or self._stop_requested:
                     return
                 continue
             else:
                 # Clean exit (run_once=True path) — don't loop forever.
                 return
+
+    def _report_connection_loss(self, exc):
+        """Log a failed (re)connection: WARNING during the grace period, then
+        an ERROR at most every DENORM_QUEUE_OUTAGE_REPEAT seconds.
+
+        The ERROR message is deliberately constant (no elapsed time, no error
+        text) so error trackers that group by message, such as Rollbar, fold a
+        whole outage into one item; the details are in the WARNING logged on
+        every attempt.
+        """
+        now = time.monotonic()
+        if self._outage_started is None:
+            self._outage_started = now
+        down_for = now - self._outage_started
+
+        logger.warning(
+            "denorm_queue: lost LISTEN connection (%s: %s); database unreachable "
+            "for %.0fs; reconnecting in %.1fs",
+            type(exc).__name__,
+            exc,
+            down_for,
+            self._backoff,
+        )
+
+        grace = denorm_settings.DENORM_QUEUE_OUTAGE_GRACE
+        repeat = denorm_settings.DENORM_QUEUE_OUTAGE_REPEAT
+        if down_for < grace:
+            return
+        if self._last_outage_error is not None and now - self._last_outage_error < repeat:
+            return
+        self._last_outage_error = now
+        logger.error(
+            "denorm_queue: database unreachable for longer than %ds (%s); "
+            "denormalized fields are not being recomputed until it is back",
+            grace,
+            type(exc).__name__,
+        )
 
     def _listen_loop(self, run_once=False):
         """Inner loop. Raises on connection loss; caller reconnects."""
@@ -96,6 +142,14 @@ class Command(BaseCommand):
         # starts waiting from the base again.
         self._backoff = self.base_backoff
 
+        if self._outage_started is not None:
+            logger.warning(
+                "denorm_queue: database connection restored after %.0fs",
+                time.monotonic() - self._outage_started,
+            )
+            self._outage_started = None
+            self._last_outage_error = None
+
         logger.info("denorm_queue: listening on channel '%s'", const.DENORM_QUEUE_NAME)
 
         # Spec 1.2: PostgreSQL does not queue NOTIFYs for disconnected
@@ -106,7 +160,7 @@ class Command(BaseCommand):
 
         ran_once = False
         while True:
-            if ran_once and run_once:
+            if (ran_once and run_once) or self._stop_requested:
                 return
             ran_once = True
 

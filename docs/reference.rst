@@ -327,6 +327,23 @@ number of chord re-dispatch passes; on reaching it the task aborts with an
 error log naming the still-dirty ``content_type_id`` values (a likely
 non-deterministic denormalized function), instead of re-dispatching forever.
 
+``DENORM_QUEUE_OUTAGE_GRACE`` (default ``900``, i.e. 15 minutes) and
+``DENORM_QUEUE_OUTAGE_REPEAT`` (default ``1800``, i.e. 30 minutes): how the
+``denorm_queue`` daemon reports a database it cannot reach. It reconnects with
+an exponential backoff capped at 30 seconds and logs every failed attempt as a
+WARNING. Once the database has been unreachable for longer than
+``DENORM_QUEUE_OUTAGE_GRACE`` it logs an ERROR, repeated at most every
+``DENORM_QUEUE_OUTAGE_REPEAT`` seconds while the outage lasts; the ERROR text
+is constant, so error trackers that group by message (e.g. Rollbar) fold one
+outage into one item. A successful reconnect logs the outage duration and
+resets both clocks. A restart, failover or deploy therefore never produces an
+ERROR. The Celery tasks (``flush_via_queue``, ``flush_batch``,
+``_flush_requeue``) do not report a lost connection at all: they log a
+WARNING and return, because the dirty markers persist and the daemon
+re-dispatches ``flush_via_queue`` as soon as it reconnects. To get the
+ERROR into an error tracker, attach its logging handler to the
+``denorm.management.commands.denorm_queue`` logger.
+
 .. note::
 
    Since 1.12.0, marker INSERTs performed *during a flush* no longer emit a

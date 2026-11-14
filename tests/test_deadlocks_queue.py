@@ -208,13 +208,20 @@ def test_denorm_queue_survives_listen_connection_drop(
     errors, sleep with backoff, then re-acquire connection.connection and
     re-issue the LISTEN before continuing.
     """
-    from django.core.management import call_command
     from django.db import connections
 
     from denorm.db import const
+    from denorm.management.commands.denorm_queue import Command
 
     queue_error: list[tuple[str, str]] = []
     queue_started = threading.Event()
+    # Drive the command object directly (not call_command) so the test can
+    # stop it at the end: a daemon left running in the background shares the
+    # module-level `connection`/`select`/`flush_via_queue` names that later
+    # tests monkeypatch, and broke them depending on test order. A short
+    # select timeout makes the stop request take effect quickly.
+    cmd = Command()
+    cmd.select_timeout = 0.2
 
     def run_queue():
         queue_started.set()
@@ -238,23 +245,18 @@ def test_denorm_queue_survives_listen_connection_drop(
             # for real by the live_worker drain test above). This is a
             # harness interaction, not a denorm runtime bug.
             #
-            # Note: handle() blocks forever; if the loop survives the drop,
-            # this call never returns and the daemon thread stays alive until
-            # the test process exits — which is fine.
             # Rebind the module-level NAME to a Mock (instead of patching
-            # `.delay` on the shared task object). call_command("denorm_queue")
-            # blocks forever, so the `with patch(...)` context never exits and
-            # its restore never runs. Patching the real task's `.delay` would
-            # therefore leak a return_value=None mock across the whole test
-            # session, breaking every later test that depends on
-            # flush_via_queue.delay() returning a real AsyncResult. Patching
-            # the imported name leaves the real task untouched.
+            # `.delay` on the shared task object), so the real task stays
+            # untouched for other tests. handle() runs until request_stop()
+            # at the end of the test, which also lets this patch restore.
             with patch(
                 "denorm.management.commands.denorm_queue.flush_via_queue"
             ):
-                call_command("denorm_queue")
+                cmd.handle()
         except BaseException as e:  # noqa: BLE001
             queue_error.append((type(e).__name__, str(e)[:200]))
+        finally:
+            connections["default"].close()
 
     thread = threading.Thread(target=run_queue, daemon=True, name="denorm_queue")
     thread.start()
@@ -285,7 +287,14 @@ def test_denorm_queue_survives_listen_connection_drop(
     # Give the LISTEN thread time to detect the drop (select wakes, poll fails).
     time.sleep(2.0)
 
-    if not thread.is_alive():
+    alive_after_drop = thread.is_alive()
+
+    # Always stop the daemon, so it does not outlive this test.
+    cmd.request_stop()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "denorm_queue thread did not stop on request_stop()"
+
+    if not alive_after_drop:
         pytest.fail(
             "denorm_queue thread DIED after pg_terminate_backend killed its "
             f"LISTEN connection. Captured exception(s): {queue_error}. "
