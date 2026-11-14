@@ -1,8 +1,8 @@
 Changelog
 =========
 
-Unreleased
-----------
+1.16.0 (2026-11-14)
+-------------------
 
 * A database that goes away (restart, failover, crash) no longer fails
   denorm's Celery tasks. ``flush_via_queue``, ``_flush_requeue`` and
