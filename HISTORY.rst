@@ -1,6 +1,28 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+* A database that goes away (restart, failover, crash) no longer fails
+  denorm's Celery tasks. ``flush_via_queue``, ``_flush_requeue`` and
+  ``flush_batch`` recognise a lost or refused connection (new
+  ``denorm.retry.is_connection_error()``), log a WARNING, drop the broken
+  connection and return; ``flush_batch`` aborts the batch instead of logging
+  one traceback per remaining pair. Nothing is lost: the dirty markers stay in
+  the table and the ``denorm_queue`` daemon re-dispatches ``flush_via_queue``
+  as soon as it reconnects. Other database errors behave as before.
+* ``denorm_queue`` reports an outage with a grace period: every failed
+  reconnect is a WARNING, an ERROR follows only after
+  ``DENORM_QUEUE_OUTAGE_GRACE`` seconds (default 15 minutes) and repeats at
+  most every ``DENORM_QUEUE_OUTAGE_REPEAT`` seconds (default 30 minutes). The
+  ERROR text is constant, so an error tracker groups one outage into one item.
+  A reconnect logs how long the database was unreachable.
+* ``denorm_queue``'s ``Command`` gained ``request_stop()``, which ends
+  ``handle()`` at the next wakeup. The LISTEN-drop test now stops its
+  background daemon instead of leaving it running, which made two later
+  daemon tests fail depending on test order.
+
 1.15.0 (2026-10-18)
 -------------------
 

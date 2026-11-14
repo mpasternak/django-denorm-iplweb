@@ -3,10 +3,38 @@ import logging
 from celery import chord, shared_task
 from celery_singleton import Singleton
 
+from django.db import InterfaceError, OperationalError, close_old_connections
+
 from denorm import denorms
 from denorm.conf import settings
+from denorm.retry import is_connection_error
 
 logger = logging.getLogger(__name__)
+
+# Database errors that may mean "connection lost"; is_connection_error() then
+# tells a lost connection apart from e.g. a query error.
+_DB_ERRORS = (OperationalError, InterfaceError)
+
+
+def _give_up_on_lost_connection(task_name, exc):
+    """Log a lost database connection and drop the broken connection.
+
+    A lost connection (restart, failover, crash) must not fail a denorm task:
+    the dirty markers persist in the table, and the denorm_queue daemon
+    re-dispatches flush_via_queue as soon as it reconnects (plus every
+    keepalive), so the work resumes on its own. The daemon is the single place
+    that escalates a long outage to an ERROR, after its grace period.
+    """
+    logger.warning(
+        "denorm %s: database connection lost (%s: %s); giving up this run, "
+        "the dirty markers persist and will be flushed once the database is back",
+        task_name,
+        type(exc).__name__,
+        exc,
+    )
+    # Discard the broken connection so the next task in this worker process
+    # opens a fresh one instead of failing on the dead socket.
+    close_old_connections()
 
 
 @shared_task(
@@ -47,10 +75,27 @@ def flush_batch(pairs):
     # the next convergence round.  If the object keeps failing,
     # DENORM_MAX_QUEUE_PASSES caps the number of re-dispatches and logs an
     # error, bounding recovery latency without blocking other objects.
+    #
+    # A LOST CONNECTION is the exception to per-pair isolation: every remaining
+    # pair would fail the same way and log a traceback each. Abort the batch
+    # instead (markers persist; see _give_up_on_lost_connection).
     errors = 0
-    for content_type_id, object_id in pairs:
+    for done, (content_type_id, object_id) in enumerate(pairs):
         try:
             denorms.flush_single(content_type_id, object_id)
+        except _DB_ERRORS as exc:
+            if is_connection_error(exc):
+                _give_up_on_lost_connection("flush_batch", exc)
+                return {"processed": done, "errors": errors, "aborted": True}
+            errors += 1
+            logger.exception(
+                "denorm flush_batch: database error flushing "
+                "(content_type_id=%s, object_id=%s); skipping pair so the "
+                "rest of the batch and the chord callback can still run. "
+                "The object's DirtyInstance marker persists for the next round.",
+                content_type_id,
+                object_id,
+            )
         except Exception:
             errors += 1
             logger.exception(
@@ -115,7 +160,13 @@ def flush_via_queue(_pass=0):
     # re-dispatches flush_via_queue if the dirty table is still non-empty.
     # Bounded by DENORM_MAX_QUEUE_PASSES (the queue analogue of
     # DENORM_MAX_FLUSH_PASSES) so a non-convergent denorm cannot loop forever.
-    chunks = _chunk_distinct_pairs()
+    try:
+        chunks = _chunk_distinct_pairs()
+    except _DB_ERRORS as exc:
+        if not is_connection_error(exc):
+            raise
+        _give_up_on_lost_connection("flush_via_queue", exc)
+        return
     if not chunks:
         return
 
@@ -143,5 +194,12 @@ def _flush_requeue(batch_results, next_pass):
     # against a stale lock from the previous pass.
     from denorm.models import DirtyInstance
 
-    if DirtyInstance.objects.exists():
+    try:
+        still_dirty = DirtyInstance.objects.exists()
+    except _DB_ERRORS as exc:
+        if not is_connection_error(exc):
+            raise
+        _give_up_on_lost_connection("_flush_requeue", exc)
+        return
+    if still_dirty:
         flush_via_queue.delay(_pass=next_pass)

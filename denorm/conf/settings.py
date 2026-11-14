@@ -31,6 +31,17 @@ DENORM_DIRTY_INSTANCES_VIEW_ACCESS = getattr(
 # never be enqueued again.
 DENORM_SINGLETON_LOCK_EXPIRY = getattr(settings, "DENORM_SINGLETON_LOCK_EXPIRY", 600)
 
+# denorm_queue daemon: how long (seconds) the database may stay unreachable
+# before the outage is logged at ERROR level. Until then every failed
+# reconnect is only a WARNING: a restart, failover or deploy routinely takes a
+# few seconds to a couple of minutes, and the web application reports a real
+# outage to its users much sooner than denorm could.
+DENORM_QUEUE_OUTAGE_GRACE = getattr(settings, "DENORM_QUEUE_OUTAGE_GRACE", 15 * 60)
+
+# denorm_queue daemon: while the outage lasts beyond the grace period, repeat
+# the ERROR at most this often (seconds), not on every reconnect attempt.
+DENORM_QUEUE_OUTAGE_REPEAT = getattr(settings, "DENORM_QUEUE_OUTAGE_REPEAT", 30 * 60)
+
 # Number of (content_type_id, object_id) pairs handled by one celery task.
 DENORM_QUEUE_CHUNK_SIZE = getattr(settings, "DENORM_QUEUE_CHUNK_SIZE", 50)
 

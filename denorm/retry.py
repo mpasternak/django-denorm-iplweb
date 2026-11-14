@@ -54,6 +54,58 @@ def is_retryable(exc: BaseException) -> bool:
     return "deadlock detected" in msg or "could not serialize access" in msg
 
 
+# SQLSTATEs meaning "the server is going away / not accepting connections":
+# admin_shutdown, crash_shutdown, cannot_connect_now (startup/recovery).
+CONNECTION_LOSS_PGCODES = frozenset({"57P01", "57P02", "57P03"})
+
+# Fallback substrings for errors raised client-side by psycopg2: a dropped
+# socket has no SQLSTATE at all. Lowercased.
+CONNECTION_LOSS_MESSAGES = (
+    "server closed the connection unexpectedly",
+    "connection already closed",
+    "terminating connection",
+    "the database system is shutting down",
+    "the database system is starting up",
+    "the database system is in recovery mode",
+    "could not connect to server",
+    "connection refused",
+    "no connection to the server",
+    "ssl connection has been closed unexpectedly",
+    "could not receive data from server",
+    "could not send data to server",
+    "could not translate host name",
+)
+
+
+def is_connection_error(exc: BaseException) -> bool:
+    """True if `exc` means the database connection is lost or unavailable.
+
+    Covers a server restart, failover or crash, a dropped socket and a server
+    refusing new connections while it shuts down or starts up. None of these
+    is a problem with the denormalized data: the dirty markers stay in the
+    table and are recomputed once the database is back, so callers log a
+    warning and give up quietly instead of failing the task.
+    """
+    try:
+        from django.db import InterfaceError, OperationalError
+    except ImportError:
+        return False
+    import psycopg2
+
+    if isinstance(exc, (InterfaceError, psycopg2.InterfaceError)):
+        # psycopg2 raises InterfaceError ("connection already closed") when a
+        # cursor is used on a connection whose socket is already gone.
+        return True
+    if not isinstance(exc, (OperationalError, psycopg2.OperationalError)):
+        return False
+    code = _pgcode(exc)
+    if code is not None:
+        # SQLSTATE class 08 = connection exception.
+        return code.startswith("08") or code in CONNECTION_LOSS_PGCODES
+    msg = str(exc).lower()
+    return any(fragment in msg for fragment in CONNECTION_LOSS_MESSAGES)
+
+
 def retry_on_serialization_failure(
     func=None,
     *,
